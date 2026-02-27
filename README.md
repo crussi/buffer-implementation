@@ -3,7 +3,7 @@
 This is just a simple implementation of this data-structure:
 
 ```c
-typdef struct {
+typedef struct {
     int length;
     char* line;
 } row;
