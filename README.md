@@ -33,5 +33,5 @@ void printBuf(buffer*);
 
 Feel free to contribute if you would like to!
 
-> [NOTE]
+> NOTE <br>
 > The main function in this program just tests the methods, if you would like to use the buffer data-structure then you should remove the main function.
