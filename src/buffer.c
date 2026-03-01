@@ -61,7 +61,7 @@ buffer* fileToBuf(FILE* f) {
         buf->rows[buf->numrows].line = malloc(nread + 1);
         if (!buf->rows[buf->numrows].line) {
             free(line);
-            free(buf);
+            freeBuf(buf);
             return NULL;
         }
 

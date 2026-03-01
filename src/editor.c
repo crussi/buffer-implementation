@@ -45,6 +45,7 @@ void editor_free(Editor *e) {
 // ------------------------------------------------------------
 
 void editorInsertChar(Editor *e, int row, int col, char c) {
+    if (!e || row < 0 || row >= e->buf->numrows) return;
     Action a = {
         .type = INSERT_CHAR,
         .position = { row, col },
@@ -56,6 +57,8 @@ void editorInsertChar(Editor *e, int row, int col, char c) {
 }
 
 void editorDeleteChar(Editor *e, int row, int col) {
+    if (!e || row < 0 || row >= e->buf->numrows) return;
+    if (col < 0 || col >= e->buf->rows[row].length) return;    
     char deleted = e->buf->rows[row].line[col];
 
     Action a = {
@@ -69,6 +72,7 @@ void editorDeleteChar(Editor *e, int row, int col) {
 }
 
 void editorInsertCR(Editor *e, int row, int col) {
+    if (!e || row < 0 || row >= e->buf->numrows) return;
     Action a = {
         .type = INSERT_CR,
         .position = { row, col },
@@ -79,20 +83,8 @@ void editorInsertCR(Editor *e, int row, int col) {
     insertCR(e->buf, row, col);
 }
 
-// void editorDeleteCR(Editor *e, int row) {
-//     int col = e->buf->rows[row - 1].length;
-
-//     Action a = {
-//         .type = DELETE_CR,
-//         .position = { row, col },
-//         .character = 0,
-//         .text = NULL
-//     };
-//     history_record(e->history, a);
-//     deleteCR(e->buf, row);
-// }
-
 void editorDeleteCR(Editor *e, int row) {
+    if (!e || row <= 0 || row >= e->buf->numrows) return;
     int split_row = row - 1;
     int split_col = e->buf->rows[split_row].length;
 
@@ -113,10 +105,12 @@ void editorDeleteCR(Editor *e, int row) {
 // ------------------------------------------------------------
 
 bool editorUndo(Editor *e) {
+    if (!e) return false;
     return history_undo(e->history, e->buf);
 }
 
 bool editorRedo(Editor *e) {
+    if (!e) return false;
     return history_redo(e->history, e->buf);
 }
 

@@ -55,7 +55,6 @@ bool history_undo(EditorHistory *h, buffer *buf) {
 
     // Push the inverse onto the redo stack so it can be re-applied.
     push_action(h->redo_stack, a);
-    free_action(&a);
     return true;
 }
 
@@ -85,7 +84,6 @@ bool history_redo(EditorHistory *h, buffer *buf) {
 
     // Push back onto the undo stack so it can be undone again.
     push_action(h->undo_stack, a);
-    free_action(&a);
     return true;
 }
 

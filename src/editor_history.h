@@ -11,9 +11,9 @@ typedef struct {
 } EditorHistory;
 
 EditorHistory *new_editor_history(void);
-void           history_record(EditorHistory *h, Action a);
-bool           history_undo(EditorHistory *h, buffer *buf);
-bool           history_redo(EditorHistory *h, buffer *buf);
-void           free_editor_history(EditorHistory *h);
+void history_record(EditorHistory *h, Action a);
+bool history_undo(EditorHistory *h, buffer *buf);
+bool history_redo(EditorHistory *h, buffer *buf);
+void free_editor_history(EditorHistory *h);
 
 #endif

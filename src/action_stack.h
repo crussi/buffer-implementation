@@ -48,6 +48,6 @@ void free_action_stack(ActionStack *stack);
 
 void reset_action_stack(ActionStack *stack);
 
-void free_action(Action *action);
+//void free_action(Action *action);
 
 #endif

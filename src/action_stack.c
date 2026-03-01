@@ -12,7 +12,7 @@
 // ---------------------------------------------------------------------------
 
 // Free the text payload of a single Action (safe on NULL text).
-void free_action(Action *action) {
+static void free_action(Action *action) {
     if (!action) return;
     free(action->text);
     action->text = NULL;
@@ -123,7 +123,7 @@ void reset_action_stack(ActionStack *stack) {
     stack->size = 0;
 }
 
-void free_action_stack(ActionStack *stack) {
+ void free_action_stack(ActionStack *stack) {
     if (!stack) return;
     free_text_payloads(stack, 0, stack->size);
     free(stack->actions);

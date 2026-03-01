@@ -1,0 +1,225 @@
+You’ve built a surprisingly solid foundation for a terminal‑based text editor—clean separation of concerns, careful memory handling, and a clear undo/redo model. What follows is a full, structured review across the five areas you asked about, grounded directly in the code you provided.
+
+---
+
+## 1) Missing functionality relative to typical text‑editor scope
+
+Your current primitives are:
+
+- Insert/delete a character
+- Insert/delete a newline
+- Undo/redo
+- Load/save buffer
+- Dynamic row management
+
+These are the *minimum viable operations* for a line‑based editor. What’s missing depends on the editor philosophy you want, but here are the most common gaps:
+
+### Missing but expected for a basic editor
+- **Insert/delete a range of characters**  
+  You only support single‑character operations. Multi‑character insert/delete is essential for:
+  - Pasting text
+  - Undoing multi‑character deletions efficiently
+  - Word‑level operations
+
+- **Row-level operations**  
+  No functions for:
+  - Inserting a new empty row
+  - Deleting an entire row
+  - Replacing a row
+  These are useful for commands like “dd” (Vim) or block operations.
+
+- **Cursor normalization helpers**  
+  You rely on callers to ensure `row` and `col` are valid. Editors typically include:
+  - Clamp row/col
+  - Move cursor left/right/up/down with wraparound
+  - Ensure cursor stays within line bounds after edits
+
+- **Search functionality**  
+  Even a simple substring search is foundational.
+
+- **Selection / region operations**  
+  Not required yet, but eventually needed for:
+  - Copy/paste
+  - Multi-character delete
+  - Multi-character undo grouping
+
+### Missing for undo/redo correctness
+- **Action grouping (transaction boundaries)**  
+  Right now, typing “hello” creates 5 undo steps. Most editors group continuous typing into a single undo unit.
+
+- **Redo invalidation on buffer edits**  
+  You *do* clear the redo stack on new edits—good.  
+  But redo correctness breaks if the buffer changes outside history (e.g., loading a file, programmatic edits).
+
+---
+
+## 2) Abstraction quality and opportunities to improve
+
+Your layering is clean:
+
+- `buffer.c` handles raw text storage
+- `editor.c` exposes high-level operations
+- `editor_history.c` handles undo/redo
+- `action_stack.c` is a generic stack
+
+This is a good architecture. A few refinements would make it more idiomatic and robust.
+
+### Opportunities to improve abstraction
+
+- **Encapsulate row manipulation inside buffer.c**  
+  `editor.c` directly accesses `buf->rows[row]`.  
+  Better: expose `buffer_insert_char(buf, row, col, c)` etc.  
+  This prevents external code from breaking invariants.
+
+- **Action should be immutable once pushed**  
+  Right now, `Action` is a shallow struct with a raw pointer.  
+  If future code modifies `action.text`, you can corrupt history.
+
+- **History should store inverse actions explicitly**  
+  Today you push the *same* action onto redo.  
+  This works only because your operations are perfectly invertible.  
+  More robust: store the inverse action at record time.
+
+- **buffer.c mixes allocation strategy and editing logic**  
+  Consider splitting:
+  - `buffer_storage.c` (rows, capacity, realloc)
+  - `buffer_edit.c` (insert/delete operations)
+
+- **fileToBuf() mixes parsing and allocation**  
+  A more idiomatic approach:
+  - Read lines into a temporary dynamic array
+  - Then allocate the buffer in one pass
+
+---
+
+## 3) Missing functionality in buffer.c (even if you don’t want to modify it)
+
+Even if you freeze buffer.c, here are the missing pieces that will matter later:
+
+### Missing safety and correctness features
+- **Bounds checking for rowIndex**  
+  Many functions assume `rowIndex` is valid:
+  - `deleteChar`
+  - `insertCR`
+  - `deleteCR`
+  - `editorDeleteChar` calls `buf->rows[row].line[col]` without checking
+
+- **UTF‑8 awareness**  
+  All operations assume 1 byte = 1 character.  
+  If you ever want Unicode, this becomes a major rewrite.
+
+- **Row compaction after deleteCR**  
+  After merging rows, you do not shrink the rows array.  
+  Not a leak, but wasted memory.
+
+### Missing convenience operations
+- `buffer_insert_row`
+- `buffer_delete_row`
+- `buffer_replace_row`
+- `buffer_clear`
+
+### Missing structural helpers
+- `buffer_row_length(buf, row)`
+- `buffer_total_chars(buf)`
+- `buffer_is_empty(buf)`
+
+---
+
+## 4) Safety issues, memory leaks, and undefined behavior risks
+
+You’ve done well—no obvious leaks in normal flows. But there are several correctness and safety issues.
+
+### Definite or likely undefined behavior
+- **editorDeleteChar() reads deleted char without bounds checking**  
+  ```c
+  char deleted = e->buf->rows[row].line[col];
+  ```
+  If `col == length`, this is UB.
+
+- **deleteChar() calls deleteCR() when at < 0**  
+  But deleteCR() assumes `rowIndex > 0`.  
+  If rowIndex == 0 and col < 0 → UB.
+
+- **insertCR() writes r->line[at] = '\0' without ensuring capacity**  
+  If `r->line` was exactly length bytes, this is safe, but fragile.
+
+- **deleteCR() memmove uses (numrows - rowIndex - 1)**  
+  If rowIndex == numrows-1, this becomes memmove(..., 0 bytes).  
+  Safe but worth guarding explicitly.
+
+### Memory leak risks
+- **fileToBuf() leaks partially allocated rows on realloc failure**  
+  Example:
+  ```c
+  row* tmp = realloc(buf->rows, newCap * sizeof(row));
+  if (!tmp) {
+      free(line);
+      free(buf);
+      return NULL;
+  }
+  ```
+  `buf->rows` is leaked.
+
+- **history_undo() and redo() free_action(&a)**  
+  This frees `a.text`, but:
+  - You never allocate `text` for any action
+  - Future multi-character actions will require careful ownership rules
+
+### Logical safety issues
+- **ActionStack uses shallow copies of Action**  
+  If you ever store multi-character text, you must deep-copy it.
+
+- **No validation of row/col in editor.c**  
+  A malformed cursor can corrupt memory.
+
+---
+
+## 5) Naming conventions and idiomatic C style
+
+Your naming is mostly consistent and readable. A few notes:
+
+### Strong points
+- snake_case everywhere
+- clear struct names (`ActionStack`, `EditorHistory`)
+- good function prefixes (`editor*`, `history*`, `buffer*`)
+
+### Improvements
+- **Struct typedefs should be lowercase or suffixed**  
+  Idiomatic C often uses:
+  - `typedef struct row row;`
+  - or `typedef struct Row Row;`
+
+- **Function names should reflect ownership semantics**  
+  `free_action(Action *a)` frees only `a->text`, not the struct.  
+  That’s surprising.
+
+- **fileGetline() should be file_getline()**  
+  C standard library uses lowercase with underscores.
+
+- **newBuf() should be buffer_new()**  
+  Consistency with `editor_new_empty()`.
+
+- **insertCR/deleteCR**  
+  CR is ambiguous; “newline” or “linebreak” is clearer.
+
+---
+
+## Summary of the most important improvements
+
+### Critical correctness fixes
+- Add bounds checking everywhere row/col are used.
+- Fix memory leaks in fileToBuf() on realloc failure.
+- Clarify ownership of Action.text and deep-copy when pushing.
+
+### Architectural improvements
+- Wrap all buffer operations in buffer.c; avoid direct row access.
+- Add multi-character operations and action grouping.
+- Add row-level operations for completeness.
+
+### Safety improvements
+- Validate rowIndex in deleteChar(), insertCR(), deleteCR().
+- Ensure realloc failures free all partially allocated memory.
+
+---
+
+If you want, I can produce a revised version of one module (e.g., buffer.c or editor_history.c) showing how to harden it while keeping your design intact.

@@ -14,7 +14,7 @@
 // ---------------------------------------------------------------------------
 
 // Free the text payload of a single Action (safe on NULL text).
-void free_action(Action *action) {
+static void free_action(Action *action) {
     if (!action) return;
     free(action->text);
     action->text = NULL;
@@ -125,7 +125,7 @@ void reset_action_stack(ActionStack *stack) {
     stack->size = 0;
 }
 
-void free_action_stack(ActionStack *stack) {
+ void free_action_stack(ActionStack *stack) {
     if (!stack) return;
     free_text_payloads(stack, 0, stack->size);
     free(stack->actions);
@@ -184,7 +184,7 @@ void free_action_stack(ActionStack *stack);
 
 void reset_action_stack(ActionStack *stack);
 
-void free_action(Action *action);
+//void free_action(Action *action);
 
 #endif
 
@@ -374,7 +374,7 @@ void freeBuf(buffer* buf) {
     for (int i = 0; i < buf->numrows; i++)
         free(buf->rows[i].line);
     free(buf->rows);
-    free(buf);
+    freeBuf(buf);
 }
 
 long int fileGetline(char **lineptr, size_t *n, FILE *stream) {
@@ -495,6 +495,7 @@ void editor_free(Editor *e) {
 // ------------------------------------------------------------
 
 void editorInsertChar(Editor *e, int row, int col, char c) {
+    if (!e || row < 0 || row >= e->buf->numrows) return;
     Action a = {
         .type = INSERT_CHAR,
         .position = { row, col },
@@ -506,6 +507,8 @@ void editorInsertChar(Editor *e, int row, int col, char c) {
 }
 
 void editorDeleteChar(Editor *e, int row, int col) {
+    if (!e || row < 0 || row >= e->buf->numrows) return;
+    if (col < 0 || col >= e->buf->rows[row].length) return;    
     char deleted = e->buf->rows[row].line[col];
 
     Action a = {
@@ -530,15 +533,18 @@ void editorInsertCR(Editor *e, int row, int col) {
 }
 
 void editorDeleteCR(Editor *e, int row) {
-    int col = e->buf->rows[row - 1].length;
+    int split_row = row - 1;
+    int split_col = e->buf->rows[split_row].length;
 
     Action a = {
         .type = DELETE_CR,
-        .position = { row, col },
+        .position = { split_row, split_col },  // FIXED
         .character = 0,
         .text = NULL
     };
+
     history_record(e->history, a);
+
     deleteCR(e->buf, row);
 }
 
@@ -658,7 +664,7 @@ bool history_undo(EditorHistory *h, buffer *buf) {
 
     // Push the inverse onto the redo stack so it can be re-applied.
     push_action(h->redo_stack, a);
-    free_action(&a);
+    //free_action(&a);
     return true;
 }
 
@@ -688,7 +694,7 @@ bool history_redo(EditorHistory *h, buffer *buf) {
 
     // Push back onto the undo stack so it can be undone again.
     push_action(h->undo_stack, a);
-    free_action(&a);
+    //free_action(&a);
     return true;
 }
 
@@ -714,10 +720,10 @@ typedef struct {
 } EditorHistory;
 
 EditorHistory *new_editor_history(void);
-void           history_record(EditorHistory *h, Action a);
-bool           history_undo(EditorHistory *h, buffer *buf);
-bool           history_redo(EditorHistory *h, buffer *buf);
-void           free_editor_history(EditorHistory *h);
+void history_record(EditorHistory *h, Action a);
+bool history_undo(EditorHistory *h, buffer *buf);
+bool history_redo(EditorHistory *h, buffer *buf);
+void free_editor_history(EditorHistory *h);
 
 #endif
 
