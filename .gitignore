@@ -2,3 +2,4 @@ fears
 buffer-implementation.exe
 output.txt
 .vscode/
+build/

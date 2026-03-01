@@ -267,11 +267,6 @@ void test_reset_frees_text_payloads(void) {
     TEST_ASSERT_EQUAL_size_t(0, stack->size);
 }
 
-void test_free_action_handles_null_text(void) {
-    Action a = make_char_action(INSERT_CHAR, 0, 0, 'x');
-    //free_action(&a);  // text == NULL, must not crash
-}
-
 
 // --------------------------------------------------------- max_capacity
 
@@ -349,7 +344,6 @@ int main(void) {
 
     RUN_TEST(test_push_pop_text_payload_round_trips);
     RUN_TEST(test_reset_frees_text_payloads);
-    RUN_TEST(test_free_action_handles_null_text);
 
     RUN_TEST(test_max_capacity_size_never_exceeds_limit);
     RUN_TEST(test_max_capacity_sliding_window_keeps_newest);
