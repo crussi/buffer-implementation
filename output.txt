@@ -188,296 +188,568 @@ void free_action(Action *action);
 
 #endif
 
-//main.c
+//buffer.c
 
-#include <stdio.h>
+#include "buffer.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
 
-typedef struct {
-	int length;
-	char* line;
-} row;
+buffer* newBuf(void) {
+    buffer* buf = malloc(sizeof(buffer));
+    if (!buf) return NULL;
 
-typedef struct {
-	row* rows;
-	int numrows;
-	int capacity;
-} buffer;
+    buf->capacity = 1;
+    buf->rows = malloc(sizeof(row));
+    if (!buf->rows) {
+        free(buf);
+        return NULL;
+    }
 
+    buf->rows[0].length = 0;
+    buf->rows[0].line = malloc(1);
+    if (!buf->rows[0].line) {
+        free(buf->rows);
+        free(buf);
+        return NULL;
+    }
+    buf->rows[0].line[0] = '\0';
+    buf->numrows = 1;
 
-
-
-buffer* newBuf(void);
-buffer* fileToBuf(FILE*);
-FILE* bufToFile(buffer*);
-void insertChar(row*, int, char);
-void deleteChar(buffer*, int, int);
-void insertCR(buffer*, int, int);
-void deleteCR(buffer*, int);
-void freeBuf(buffer* buf);
-long int fileGetline(char**, size_t*, FILE*);
-void printBuf(buffer*);
-
-int main(void)
-{
-	buffer* buf1 = newBuf();
-
-	for (int i = 0; i < 26; i++)
-		insertChar(&buf1->rows[0], i, 'A' + i);
-	printBuf(buf1);
-	for (int i = 0; i < 26; i++)
-		insertChar(&buf1->rows[0], i, 'a' + i);
-	printBuf(buf1);
-	for (int i = 0; i < 26; i++)
-		deleteChar(buf1, 0, buf1->rows[0].length-1);
-	printBuf(buf1);
-	for (int i = 0; i < 25; i++)
-		insertCR(buf1, i, 1);
-	printBuf(buf1);
-	for (int i = 0; i < 26; i++)
-		deleteCR(buf1, 26-i);
-	printBuf(buf1);
-
-	freeBuf(buf1);
-	return 0;
+    return buf;
 }
 
-buffer* newBuf(void)
-{
-	buffer* buf = malloc(sizeof(buffer));
+buffer* fileToBuf(FILE* f) {
+    if (!f) return NULL;
+    buffer* buf = malloc(sizeof(buffer));
+    if (!buf) return NULL;
 
-	buf->capacity = 1;
-	buf->rows = malloc(sizeof(row));
-	buf->rows[0].length = 0;
-	buf->rows[0].line = malloc(1);
-	buf->rows[0].line[0] = '\0';
-	buf->numrows = 1;
+    buf->rows = NULL;
+    buf->numrows = 0;
+    buf->capacity = 0;
 
-	return buf;
+    char* line = NULL;
+    size_t len = 0;
+    long int nread;
+
+    while ((nread = fileGetline(&line, &len, f)) != -1) {
+        if (nread > 0 && line[nread - 1] == '\n') {
+            line[nread - 1] = '\0';
+            nread--;
+        }
+
+        if (buf->numrows == buf->capacity) {
+            int newCap = buf->capacity ? buf->capacity * 2 : 16;
+            row* tmp = realloc(buf->rows, newCap * sizeof(row));
+            if (!tmp) {
+                free(line);
+                free(buf);
+                return NULL;
+            }
+            buf->rows = tmp;
+            buf->capacity = newCap;
+        }
+
+        buf->rows[buf->numrows].line = malloc(nread + 1);
+        if (!buf->rows[buf->numrows].line) {
+            free(line);
+            free(buf);
+            return NULL;
+        }
+
+        memcpy(buf->rows[buf->numrows].line, line, nread + 1);
+        buf->rows[buf->numrows].length = nread;
+        buf->numrows++;
+    }
+
+    free(line);
+    if (buf->numrows == 0) {
+        buf->capacity = 1;
+        buf->rows = malloc(sizeof(row));
+        buf->rows[0].length = 0;
+        buf->rows[0].line = malloc(1);
+        buf->rows[0].line[0] = '\0';
+        buf->numrows = 1;
+    }
+    return buf;
 }
 
-buffer* fileToBuf(FILE* f)
-{
-	if (!f) return NULL;
-	buffer* buf = malloc(sizeof(buffer));
-	if (!buf) return NULL;
+FILE* bufToFile(buffer* buf) {
+    FILE* f = tmpfile();
+    if (!buf || !f) return NULL;
 
-	buf->rows = NULL;
-	buf->numrows = 0;
-	buf->capacity = 0;
+    for (int i = 0; i < buf->numrows; i++) {
+        fwrite(buf->rows[i].line, 1, buf->rows[i].length, f);
+        fputc('\n', f);
+    }
 
-	char* line = NULL;
-	size_t len = 0;
-	long int nread;
-
-	while ((nread = fileGetline(&line, &len, f)) != -1) {
-		if (nread > 0 && line[nread - 1] == '\n') {
-			line[nread - 1] = '\0';
-			nread--;
-		}
-
-		if (buf->numrows == buf->capacity) {
-			int newCap = buf->capacity ? buf->capacity * 2 : 16;
-			row* tmp = realloc(buf->rows, newCap * sizeof(row));
-			if (!tmp) {
-				free(line);
-				free(buf);
-				return NULL;
-			}
-			buf->rows = tmp;
-			buf->capacity = newCap;
-		}
-
-		buf->rows[buf->numrows].line = malloc(nread + 1);
-		if (!buf->rows[buf->numrows].line) {
-			free(line);
-			free(buf);
-			return NULL;
-		}
-
-		memcpy(buf->rows[buf->numrows].line, line, nread + 1);
-		buf->rows[buf->numrows].length = nread;
-		buf->numrows++;
-	}
-
-	free(line);
-	if (buf->numrows == 0) {
-		buf->capacity = 1;
-		buf->rows = malloc(sizeof(row));
-		buf->rows[0].length = 0;
-		buf->rows[0].line = malloc(1);
-		buf->rows[0].line[0] = '\0';
-		buf->numrows = 1;
-	}
-	return buf;
+    rewind(f);
+    return f;
 }
 
-FILE* bufToFile(buffer* buf)
-{
-	FILE* f = tmpfile();
-	if (!buf || !f) return NULL;
+void insertChar(row* r, int at, char c) {
+    if (!r) return;
+    if (at <= 0) at = 0;
+    if (at > r->length) at = r->length;
 
-	for (int i = 0; i < buf->numrows; i++) {
-		fwrite(buf->rows[i].line, 1, buf->rows[i].length, f);
-		fputc('\n', f);
-	}
-
-	rewind(f);
-	return f;
+    char* temp = realloc(r->line, r->length + 2);
+    if (!temp) return;
+    r->line = temp;
+    memmove(&r->line[at + 1], &r->line[at], r->length - at + 1);
+    r->line[at] = c;
+    r->length++;
 }
 
-void insertChar(row* r, int at, char c)
-{
-	if (!r) return;
-	if (at <= 0) at = 0;
-	if (at > r->length) at = r->length;
+void deleteChar(buffer* buf, int rowIndex, int at) {
+    row* r = &buf->rows[rowIndex];
+    if (!r) return;
+    if (at < 0) {
+        deleteCR(buf, rowIndex);
+        return;
+    }
+    if (at >= r->length) return;
 
-	char* temp = realloc(r->line, r->length + 2);
-	if (!temp) return;
-	r->line = temp;
-	memmove(&r->line[at + 1],
-			&r->line[at],
-			r->length - at + 1);
+    memmove(&r->line[at], &r->line[at + 1], r->length - at);
+    r->length--;
 
-	r->line[at] = c;
-	r->length++;
+    char* tmp = realloc(r->line, r->length + 1);
+    if (tmp) r->line = tmp;
 }
 
-void deleteChar(buffer* buf, int rowIndex, int at)
-{
-	row* r = &buf->rows[rowIndex];
-	if (!r) return;
-	if (at <= 0) {
-		deleteCR(buf, rowIndex);
-		return;
-	}
-	if (at >= r->length) return;
+void insertCR(buffer* buf, int rowIndex, int at) {
+    if (!buf || rowIndex < 0 || rowIndex >= buf->numrows) return;
+    if (at < 0) at = 0;
 
-	memmove(&r->line[at],
-			&r->line[at + 1],
-			r->length - at);
-	r->length--;
+    row* r = &buf->rows[rowIndex];
+    if (at > r->length) at = r->length;
+    int rightLen = r->length - at;
 
-	char* tmp = realloc(r->line, r->length + 1);
-	if (tmp) r->line = tmp;
+    row newRow;
+    newRow.length = rightLen;
+    newRow.line = malloc(newRow.length + 1);
+    if (!newRow.line) return;
+    memcpy(newRow.line, r->line + at, newRow.length);
+    newRow.line[newRow.length] = '\0';
+
+    r->length = at;
+    r->line[at] = '\0';
+
+    if (buf->numrows == buf->capacity) {
+        int newCapacity = buf->capacity ? buf->capacity * 2 : 16;
+        row* temp = realloc(buf->rows, newCapacity * sizeof(row));
+        if (!temp) {
+            free(newRow.line);
+            return;
+        }
+        buf->rows = temp;
+        buf->capacity = newCapacity;
+    }
+
+    memmove(&buf->rows[rowIndex + 2], &buf->rows[rowIndex + 1], (buf->numrows - rowIndex - 1) * sizeof(row));
+    buf->rows[rowIndex + 1] = newRow;
+    buf->numrows++;
 }
 
-void insertCR(buffer* buf, int rowIndex, int at)
-{
-	if (!buf || rowIndex < 0 || rowIndex >= buf->numrows) return;
-	if (at < 0) at = 0;
+void deleteCR(buffer* buf, int rowIndex) {
+    if (!buf || rowIndex <= 0 || rowIndex >= buf->numrows) return;
 
-	row* r = &buf->rows[rowIndex];
-	if (at > r->length) at = r->length;
-	int rightLen = r->length - at;
+    row* prev = &buf->rows[rowIndex - 1];
+    row* curr = &buf->rows[rowIndex];
 
-	row newRow;
-	newRow.length = rightLen;
-	newRow.line = malloc(newRow.length + 1);
-	if (!newRow.line) return;
-	memcpy(newRow.line,
-			r->line + at,
-			newRow.length);
-	newRow.line[newRow.length] = '\0';
+    int oldLen = prev->length;
+    char* temp = realloc(prev->line, prev->length + curr->length + 1);
+    if (!temp) return;
+    prev->line = temp;
 
-	r->length = at;
-	r->line[at] = '\0';
-	if (buf->numrows == buf->capacity) {
-		int newCapacity = buf->capacity ? buf->capacity * 2 : 16;
-		row* temp = realloc(buf->rows, newCapacity * sizeof(row));
+    memcpy(prev->line + oldLen, curr->line, curr->length + 1);
+    prev->length += curr->length;
+    free(curr->line);
 
-		if (!temp) {
-			free(newRow.line);
-			return;
-		}
-
-		buf->rows = temp;
-		buf->capacity = newCapacity;
-	}
-
-	memmove(&buf->rows[rowIndex + 2],
-			&buf->rows[rowIndex + 1],
-			(buf->numrows - rowIndex - 1) * sizeof(row));
-
-	buf->rows[rowIndex + 1] = newRow;
-	buf->numrows++;
+    memmove(&buf->rows[rowIndex], &buf->rows[rowIndex + 1], (buf->numrows - rowIndex - 1) * sizeof(row));
+    buf->numrows--;
 }
 
-void deleteCR(buffer* buf, int rowIndex)
-{
-	if (!buf || rowIndex <= 0 || rowIndex >= buf->numrows) return;
-
-	row* prev = &buf->rows[rowIndex - 1];
-	row* curr = &buf->rows[rowIndex];
-
-	int oldLen = prev->length;
-	char* temp = realloc(prev->line, prev->length + curr->length + 1);
-	if (!temp) return;
-	prev->line = temp;
-
-	memcpy(prev->line + oldLen,
-			curr->line,
-			curr->length + 1);
-
-	prev->length += curr->length;
-	free(curr->line);
-
-	memmove(&buf->rows[rowIndex],
-			&buf->rows[rowIndex + 1],
-			(buf->numrows - rowIndex - 1) * sizeof(row));
-
-	buf->numrows--;
-}
-
-void freeBuf(buffer* buf)
-{
+void freeBuf(buffer* buf) {
     if (!buf) return;
-
     for (int i = 0; i < buf->numrows; i++)
         free(buf->rows[i].line);
-
     free(buf->rows);
     free(buf);
 }
 
-long int fileGetline(char **lineptr, size_t *n, FILE *stream)
-{
-	if (!lineptr || !n || !stream) return -1;
-	if (*lineptr == NULL || *n == 0) {
-		*n = 128;
-		*lineptr = malloc(*n);
-		if (!*lineptr) return -1;
-	}
-	size_t pos = 0;
-
-	while (1) {
-		int c = fgetc(stream);
-		if (c == EOF) {
-			if (pos == 0) return -1;
-			break;
-		}
-
-		if (pos + 1 >= *n) {
-			size_t newSize = *n * 2;
-			char *temp = realloc(*lineptr, newSize);
-			if (!temp) return -1;
-			*lineptr = temp;
-			*n = newSize;
-		}
-
-		(*lineptr)[pos++] = (char)c;
-		if (c == '\n') break;
-	}
-
-	(*lineptr)[pos] = '\0';
-	return (long int)pos;
+long int fileGetline(char **lineptr, size_t *n, FILE *stream) {
+    if (!lineptr || !n || !stream) return -1;
+    if (*lineptr == NULL || *n == 0) {
+        *n = 128;
+        *lineptr = malloc(*n);
+        if (!*lineptr) return -1;
+    }
+    size_t pos = 0;
+    while (1) {
+        int c = fgetc(stream);
+        if (c == EOF) {
+            if (pos == 0) return -1;
+            break;
+        }
+        if (pos + 1 >= *n) {
+            size_t newSize = *n * 2;
+            char *temp = realloc(*lineptr, newSize);
+            if (!temp) return -1;
+            *lineptr = temp;
+            *n = newSize;
+        }
+        (*lineptr)[pos++] = (char)c;
+        if (c == '\n') break;
+    }
+    (*lineptr)[pos] = '\0';
+    return (long int)pos;
 }
 
-void printBuf(buffer* buf)
-{
-	for (int i = 0; i < buf->numrows; i++) 
-		printf("%s\n", buf->rows[i].line);
+void printBuf(buffer* buf) {
+    for (int i = 0; i < buf->numrows; i++)
+        printf("%s\n", buf->rows[i].line);
 }
 
+//buffer.h
+
+#ifndef BUFFER_H
+#define BUFFER_H
+
+#include <stdio.h>
+
+// --- Row type ---
+typedef struct {
+    int length;
+    char *line;
+} row;
+
+// --- Buffer type ---
+typedef struct {
+    row *rows;
+    int numrows;
+    int capacity;
+} buffer;
+
+// --- Buffer API ---
+buffer* newBuf(void);
+buffer* fileToBuf(FILE *f);
+FILE* bufToFile(buffer *buf);
+
+void insertChar(row *r, int at, char c);
+void deleteChar(buffer *buf, int rowIndex, int at);
+void insertCR(buffer *buf, int rowIndex, int at);
+void deleteCR(buffer *buf, int rowIndex);
+
+void freeBuf(buffer *buf);
+long int fileGetline(char **lineptr, size_t *n, FILE *stream);
+void printBuf(buffer *buf);
+
+#endif // BUFFER_H
+
+//editor.c
+
+#include "editor.h"
+#include <stdlib.h>
+
+// ------------------------------------------------------------
+// Construction / Destruction
+// ------------------------------------------------------------
+
+Editor *editor_new_empty(void) {
+    Editor *e = malloc(sizeof(Editor));
+    if (!e) return NULL;
+
+    e->buf = newBuf();
+    e->history = new_editor_history();
+
+    if (!e->buf || !e->history) {
+        editor_free(e);
+        return NULL;
+    }
+    return e;
+}
+
+Editor *editor_new_from_file(FILE *f) {
+    Editor *e = malloc(sizeof(Editor));
+    if (!e) return NULL;
+
+    e->buf = fileToBuf(f);
+    e->history = new_editor_history();
+
+    if (!e->buf || !e->history) {
+        editor_free(e);
+        return NULL;
+    }
+    return e;
+}
+
+void editor_free(Editor *e) {
+    if (!e) return;
+    free_editor_history(e->history);
+    freeBuf(e->buf);
+    free(e);
+}
+
+// ------------------------------------------------------------
+// High-level editing API
+// ------------------------------------------------------------
+
+void editorInsertChar(Editor *e, int row, int col, char c) {
+    Action a = {
+        .type = INSERT_CHAR,
+        .position = { row, col },
+        .character = c,
+        .text = NULL
+    };
+    history_record(e->history, a);
+    insertChar(&e->buf->rows[row], col, c);
+}
+
+void editorDeleteChar(Editor *e, int row, int col) {
+    char deleted = e->buf->rows[row].line[col];
+
+    Action a = {
+        .type = DELETE_CHAR,
+        .position = { row, col },
+        .character = deleted,
+        .text = NULL
+    };
+    history_record(e->history, a);
+    deleteChar(e->buf, row, col);
+}
+
+void editorInsertCR(Editor *e, int row, int col) {
+    Action a = {
+        .type = INSERT_CR,
+        .position = { row, col },
+        .character = 0,
+        .text = NULL
+    };
+    history_record(e->history, a);
+    insertCR(e->buf, row, col);
+}
+
+void editorDeleteCR(Editor *e, int row) {
+    int col = e->buf->rows[row - 1].length;
+
+    Action a = {
+        .type = DELETE_CR,
+        .position = { row, col },
+        .character = 0,
+        .text = NULL
+    };
+    history_record(e->history, a);
+    deleteCR(e->buf, row);
+}
+
+// ------------------------------------------------------------
+// Undo / Redo
+// ------------------------------------------------------------
+
+bool editorUndo(Editor *e) {
+    return history_undo(e->history, e->buf);
+}
+
+bool editorRedo(Editor *e) {
+    return history_redo(e->history, e->buf);
+}
+
+// ------------------------------------------------------------
+// Convenience
+// ------------------------------------------------------------
+
+void editorPrint(Editor *e) {
+    printBuf(e->buf);
+}
+
+
+//editor.h
+
+#ifndef EDITOR_H
+#define EDITOR_H
+
+#include <stdbool.h>
+#include "buffer.h"
+#include "editor_history.h"
+
+// The Editor owns a buffer and its undo/redo history.
+typedef struct {
+    buffer        *buf;
+    EditorHistory *history;
+} Editor;
+
+// Construction / destruction
+Editor *editor_new_empty(void);
+Editor *editor_new_from_file(FILE *f);
+void    editor_free(Editor *e);
+
+// High-level editing API (the only functions the user should call)
+void editorInsertChar(Editor *e, int row, int col, char c);
+void editorDeleteChar(Editor *e, int row, int col);
+void editorInsertCR(Editor *e, int row, int col);
+void editorDeleteCR(Editor *e, int row);
+
+// Undo / Redo
+bool editorUndo(Editor *e);
+bool editorRedo(Editor *e);
+
+// Convenience
+void editorPrint(Editor *e);
+
+#endif
+
+
+//editor_history.c
+
+#include "editor_history.h"
+#include <stdlib.h>
+
+EditorHistory *new_editor_history(void) {
+    EditorHistory *h = malloc(sizeof(EditorHistory));
+    if (!h) return NULL;
+
+    h->undo_stack = new_action_stack(0, 0);
+    h->redo_stack = new_action_stack(0, 0);
+
+    if (!h->undo_stack || !h->redo_stack) {
+        free_editor_history(h);
+        return NULL;
+    }
+
+    return h;
+}
+
+void history_record(EditorHistory *h, Action a) {
+    if (!h) return;
+    reset_action_stack(h->redo_stack);
+    push_action(h->undo_stack, a);
+}
+
+bool history_undo(EditorHistory *h, buffer *buf) {
+    if (!h || !buf) return false;
+
+    Action a;
+    if (!pop_action(h->undo_stack, &a)) return false;
+
+    switch (a.type) {
+        case INSERT_CHAR:
+            // INSERT_CHAR was recorded before inserting, so we delete it.
+            deleteChar(buf, a.position.row, a.position.col);
+            break;
+
+        case DELETE_CHAR:
+            // DELETE_CHAR was recorded with the deleted character saved, so
+            // we restore it by inserting it back at the same position.
+            insertChar(&buf->rows[a.position.row], a.position.col, a.character);
+            break;
+
+        case INSERT_CR:
+            // INSERT_CR split a row at (row, col), creating row+1.
+            // Undo by merging row+1 back into row.
+            deleteCR(buf, a.position.row + 1);
+            break;
+
+        case DELETE_CR:
+            // DELETE_CR merged row into row-1 at position col (the old
+            // length of row-1). Undo by splitting at that same point.
+            insertCR(buf, a.position.row, a.position.col);
+            break;
+    }
+
+    // Push the inverse onto the redo stack so it can be re-applied.
+    push_action(h->redo_stack, a);
+    free_action(&a);
+    return true;
+}
+
+bool history_redo(EditorHistory *h, buffer *buf) {
+    if (!h || !buf) return false;
+
+    Action a;
+    if (!pop_action(h->redo_stack, &a)) return false;
+
+    switch (a.type) {
+        case INSERT_CHAR:
+            insertChar(&buf->rows[a.position.row], a.position.col, a.character);
+            break;
+
+        case DELETE_CHAR:
+            deleteChar(buf, a.position.row, a.position.col);
+            break;
+
+        case INSERT_CR:
+            insertCR(buf, a.position.row, a.position.col);
+            break;
+
+        case DELETE_CR:
+            deleteCR(buf, a.position.row + 1);
+            break;
+    }
+
+    // Push back onto the undo stack so it can be undone again.
+    push_action(h->undo_stack, a);
+    free_action(&a);
+    return true;
+}
+
+void free_editor_history(EditorHistory *h) {
+    if (!h) return;
+    free_action_stack(h->undo_stack);
+    free_action_stack(h->redo_stack);
+    free(h);
+}
+
+//editor_history.h
+
+#ifndef EDITOR_HISTORY_H
+#define EDITOR_HISTORY_H
+
+#include <stdbool.h>
+#include "action_stack.h"
+#include "buffer.h"
+
+typedef struct {
+    ActionStack *undo_stack;
+    ActionStack *redo_stack;
+} EditorHistory;
+
+EditorHistory *new_editor_history(void);
+void           history_record(EditorHistory *h, Action a);
+bool           history_undo(EditorHistory *h, buffer *buf);
+bool           history_redo(EditorHistory *h, buffer *buf);
+void           free_editor_history(EditorHistory *h);
+
+#endif
+
+//main.c
+
+#include "buffer.h"
+#include <stdio.h>
+
+int main(void) {
+    buffer* buf1 = newBuf();
+
+    for (int i = 0; i < 26; i++)
+        insertChar(&buf1->rows[0], i, 'A' + i);
+    printBuf(buf1);
+
+    for (int i = 0; i < 26; i++)
+        insertChar(&buf1->rows[0], i, 'a' + i);
+    printBuf(buf1);
+
+    for (int i = 0; i < 26; i++)
+        deleteChar(buf1, 0, buf1->rows[0].length-1);
+    printBuf(buf1);
+
+    for (int i = 0; i < 25; i++)
+        insertCR(buf1, i, 1);
+    printBuf(buf1);
+
+    for (int i = 0; i < 26; i++)
+        deleteCR(buf1, 26-i);
+    printBuf(buf1);
+
+    freeBuf(buf1);
+    return 0;
+}
 
