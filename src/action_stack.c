@@ -96,6 +96,8 @@ bool push_action(ActionStack *stack, Action action) {
     }
 
     stack->actions[stack->size++] = action;
+    // Caller must not free text after pushing; the stack now owns it.
+    action.text = NULL; 
     return true;
 }
 
@@ -108,8 +110,11 @@ bool pop_action(ActionStack *stack, Action *out_action) {
 
 bool peek_action(const ActionStack *stack, Action *out_action) {
     if (!stack || !stack->actions || stack->size == 0) return false;
-    // Caller must NOT free out_action->text; the stack still owns it.
+    // Return a shallow copy but explicitly zero the text pointer so the
+    // caller cannot accidentally free it. If caller needs the text, they
+    // must pop instead.
     *out_action = stack->actions[stack->size - 1];
+    out_action->text = NULL;  // stack retains ownership; caller gets metadata only
     return true;
 }
 

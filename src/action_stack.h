@@ -36,6 +36,7 @@ typedef struct {
 
 ActionStack *new_action_stack(size_t initial_capacity, size_t max_capacity);
 
+// The stack takes ownership of text. Caller must not free text after pushing.
 bool push_action(ActionStack *stack, Action action);
 
 bool pop_action(ActionStack *stack, Action *out_action);

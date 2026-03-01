@@ -51,7 +51,7 @@ buffer* fileToBuf(FILE* f) {
             row* tmp = realloc(buf->rows, newCap * sizeof(row));
             if (!tmp) {
                 free(line);
-                free(buf);
+                freeBuf(buf);
                 return NULL;
             }
             buf->rows = tmp;
@@ -71,14 +71,18 @@ buffer* fileToBuf(FILE* f) {
     }
 
     free(line);
+
     if (buf->numrows == 0) {
         buf->capacity = 1;
         buf->rows = malloc(sizeof(row));
+        if (!buf->rows) { free(buf); return NULL; }
         buf->rows[0].length = 0;
         buf->rows[0].line = malloc(1);
+        if (!buf->rows[0].line) { free(buf->rows); free(buf); return NULL; }
         buf->rows[0].line[0] = '\0';
         buf->numrows = 1;
     }
+
     return buf;
 }
 
@@ -141,6 +145,8 @@ void insertCR(buffer* buf, int rowIndex, int at) {
 
     r->length = at;
     r->line[at] = '\0';
+    char *trimmed = realloc(r->line, at + 1);
+    if (trimmed) r->line = trimmed;  // best-effort; original still valid on failure
 
     if (buf->numrows == buf->capacity) {
         int newCapacity = buf->capacity ? buf->capacity * 2 : 16;
