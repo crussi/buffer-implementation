@@ -13,6 +13,9 @@ typedef struct {
 	int capacity;
 } buffer;
 
+
+
+
 buffer* newBuf(void);
 buffer* fileToBuf(FILE*);
 FILE* bufToFile(buffer*);
