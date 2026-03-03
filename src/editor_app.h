@@ -25,8 +25,9 @@ bool  app_switch_tab(EditorApp *app, int index);
 Tab  *app_active_tab(EditorApp *app);
 
 // Save operations
-bool  app_save_active(EditorApp *app);
-bool  app_save_all   (EditorApp *app);
+bool  app_save_active   (EditorApp *app);
+bool  app_save_active_as(EditorApp *app, const char *path);
+bool  app_save_all      (EditorApp *app);
 
 // Query
 bool  app_any_dirty  (EditorApp *app);

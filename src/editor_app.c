@@ -1,3 +1,5 @@
+//editor_app.c
+
 #include "editor_app.h"
 #include <stdlib.h>
 #include <string.h>
@@ -61,9 +63,21 @@ Tab *app_new_tab(EditorApp *app) {
     return t;
 }
 
-// Open a file in a new tab. Returns NULL on failure.
+// Open a file in a new tab.
+// If the file is already open, switches to that tab and returns it instead
+// of opening a duplicate. Returns NULL on failure.
 Tab *app_open_tab(EditorApp *app, const char *path) {
     if (!app || !path) return NULL;
+
+    // --- Duplicate detection: if path is already open, just switch to it ---
+    for (int i = 0; i < app->count; i++) {
+        if (app->tabs[i]->filepath &&
+            strcmp(app->tabs[i]->filepath, path) == 0) {
+            app->active = i;
+            return app->tabs[i];
+        }
+    }
+
     if (!app_ensure_capacity(app)) return NULL;
 
     Tab *t = tab_new_empty();
@@ -125,11 +139,21 @@ Tab *app_active_tab(EditorApp *app) {
 // Save operations
 // ------------------------------------------------------------
 
-// Save the active tab. Returns false if no tabs open or save fails.
+// Save the active tab.
+// If the tab has no filepath (never saved), returns false — the caller
+// should invoke app_save_active_as() to prompt the user for a path.
 bool app_save_active(EditorApp *app) {
     Tab *t = app_active_tab(app);
     if (!t) return false;
-    return tab_save(t);
+    return tab_save(t);          // returns false when filepath == NULL
+}
+
+// Save the active tab under an explicit path (Save As).
+// Updates the tab's filepath on success.
+bool app_save_active_as(EditorApp *app, const char *path) {
+    Tab *t = app_active_tab(app);
+    if (!t || !path) return false;
+    return tab_save_as(t, path);
 }
 
 // Save all open tabs. Returns true only if every save succeeded.
@@ -139,7 +163,8 @@ bool app_save_all(EditorApp *app) {
     for (int i = 0; i < app->count; i++) {
         if (app->tabs[i]->dirty) {
             if (!tab_save(app->tabs[i]))
-                all_ok = false;
+                all_ok = false;   // filepath == NULL tabs silently fail here;
+                                  // the render layer should prompt save-as for them
         }
     }
     return all_ok;
