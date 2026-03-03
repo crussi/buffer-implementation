@@ -1,29 +1,34 @@
-#include "buffer.h"
+#include "editor_app.h"
+#include "tab.h"
 #include <stdio.h>
 
-int main(void) {
-    buffer* buf1 = newBuf();
+int main(int argc, char *argv[]) {
+    EditorApp *app = app_new();
+    if (!app) {
+        fprintf(stderr, "Failed to create editor app\n");
+        return 1;
+    }
 
-    for (int i = 0; i < 26; i++)
-        insertChar(&buf1->rows[0], i, 'A' + i);
-    printBuf(buf1);
+    if (argc > 1) {
+        // Open each file passed on the command line as its own tab
+        for (int i = 1; i < argc; i++) {
+            Tab *t = app_open_tab(app, argv[i]);
+            if (!t) {
+                fprintf(stderr, "Could not open file: %s\n", argv[i]);
+            }
+        }
+        // If no files opened successfully, start with an empty tab
+        if (app_tab_count(app) == 0)
+            app_new_tab(app);
+    } else {
+        // No arguments -- start with one empty tab
+        app_new_tab(app);
+    }
 
-    for (int i = 0; i < 26; i++)
-        insertChar(&buf1->rows[0], i, 'a' + i);
-    printBuf(buf1);
+    // Print the active tab (temporary test -- replace with render loop)
+    Tab *t = app_active_tab(app);
+    if (t) tabPrint(t);
 
-    for (int i = 0; i < 26; i++)
-        deleteChar(buf1, 0, buf1->rows[0].length-1);
-    printBuf(buf1);
-
-    for (int i = 0; i < 25; i++)
-        insertCR(buf1, i, 1);
-    printBuf(buf1);
-
-    for (int i = 0; i < 26; i++)
-        deleteCR(buf1, 26-i);
-    printBuf(buf1);
-
-    freeBuf(buf1);
+    app_free(app);
     return 0;
 }
