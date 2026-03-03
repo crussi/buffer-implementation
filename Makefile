@@ -35,10 +35,7 @@ windows:
 	$(WINCC) $(WINCFLAGS) $(ALL_SOURCES) $(WINLFLAGS) -o $(WIN_TARGET)
 
 test: $(TEST_TARGETS)
-	@for t in $(TEST_TARGETS); do \
-		echo "\nRunning $$t..."; \
-		./$$t; \
-	done
+	@./run_tests.sh $(TEST_TARGETS)
 
 $(BUILD_DIR)/%: $(TEST_DIR)/%.c $(LIB_SOURCES) $(UNITY_DIR)/unity.c | $(BUILD_DIR)
 	$(CC) $(TEST_CFLAGS) $^ -o $@ $(TEST_LFLAGS)

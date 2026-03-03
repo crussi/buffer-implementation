@@ -9,7 +9,8 @@ typedef enum {
     INSERT_CHAR,
     DELETE_CHAR,
     INSERT_CR,
-    DELETE_CR
+    DELETE_CR,
+    INSERT_TEXT   // bulk string insertion; payload stored in `text`
 } ActionType;
 
 // --- Cursor / text position ---
@@ -24,6 +25,7 @@ typedef struct {
     Position    position;
     char        character;  // single-char payload (INSERT_CHAR / DELETE_CHAR)
     char       *text;       // multi-char payload (nullable, heap-allocated)
+                            // Used by INSERT_TEXT; owned by the ActionStack.
 } Action;
 
 // --- Dynamic stack of Actions ---
@@ -48,7 +50,5 @@ bool action_stack_is_empty(const ActionStack *stack);
 void free_action_stack(ActionStack *stack);
 
 void reset_action_stack(ActionStack *stack);
-
-//void free_action(Action *action);
 
 #endif
