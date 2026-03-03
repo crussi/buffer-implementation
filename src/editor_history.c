@@ -1,4 +1,5 @@
 #include "editor_history.h"
+#include "editor_cursor.h" 
 #include <stdlib.h>
 
 EditorHistory *new_editor_history(void) {
@@ -22,7 +23,7 @@ void history_record(EditorHistory *h, Action a) {
     push_action(h->undo_stack, a);
 }
 
-bool history_undo(EditorHistory *h, buffer *buf) {
+bool history_undo(EditorHistory *h, buffer *buf, EditorCursor *c) {
     if (!h || !buf) return false;
 
     Action a;
@@ -52,13 +53,17 @@ bool history_undo(EditorHistory *h, buffer *buf) {
             insertCR(buf, a.position.row, a.position.col);
             break;
     }
-
+    if (c) {
+        c->pos         = a.position;
+        c->desired_col = a.position.col;
+        cursor_clamp(c, buf);
+    }
     // Push the inverse onto the redo stack so it can be re-applied.
     push_action(h->redo_stack, a);
     return true;
 }
 
-bool history_redo(EditorHistory *h, buffer *buf) {
+bool history_redo(EditorHistory *h, buffer *buf, EditorCursor *c) {
     if (!h || !buf) return false;
 
     Action a;
@@ -82,6 +87,11 @@ bool history_redo(EditorHistory *h, buffer *buf) {
             break;
     }
 
+    if (c) {
+        c->pos         = a.position;
+        c->desired_col = a.position.col;
+        cursor_clamp(c, buf);
+    }
     // Push back onto the undo stack so it can be undone again.
     push_action(h->undo_stack, a);
     return true;

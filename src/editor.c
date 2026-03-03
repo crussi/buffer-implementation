@@ -16,6 +16,7 @@ Editor *editor_new_empty(void) {
         editor_free(e);
         return NULL;
     }
+    cursor_init(&e->cursor);
     return e;
 }
 
@@ -30,6 +31,7 @@ Editor *editor_new_from_file(FILE *f) {
         editor_free(e);
         return NULL;
     }
+    cursor_init(&e->cursor);
     return e;
 }
 
@@ -54,6 +56,7 @@ void editorInsertChar(Editor *e, int row, int col, char c) {
     };
     history_record(e->history, a);
     insertChar(&e->buf->rows[row], col, c);
+    cursor_clamp(&e->cursor, e->buf);
 }
 
 void editorDeleteChar(Editor *e, int row, int col) {
@@ -69,6 +72,7 @@ void editorDeleteChar(Editor *e, int row, int col) {
     };
     history_record(e->history, a);
     deleteChar(e->buf, row, col);
+    cursor_clamp(&e->cursor, e->buf);
 }
 
 void editorInsertCR(Editor *e, int row, int col) {
@@ -81,6 +85,7 @@ void editorInsertCR(Editor *e, int row, int col) {
     };
     history_record(e->history, a);
     insertCR(e->buf, row, col);
+    cursor_clamp(&e->cursor, e->buf);
 }
 
 void editorDeleteCR(Editor *e, int row) {
@@ -98,6 +103,7 @@ void editorDeleteCR(Editor *e, int row) {
     history_record(e->history, a);
 
     deleteCR(e->buf, row);
+    cursor_clamp(&e->cursor, e->buf);
 }
 
 // ------------------------------------------------------------
@@ -106,12 +112,12 @@ void editorDeleteCR(Editor *e, int row) {
 
 bool editorUndo(Editor *e) {
     if (!e) return false;
-    return history_undo(e->history, e->buf);
+    return history_undo(e->history, e->buf, &e->cursor);
 }
 
 bool editorRedo(Editor *e) {
     if (!e) return false;
-    return history_redo(e->history, e->buf);
+    return history_redo(e->history, e->buf, &e->cursor);
 }
 
 // ------------------------------------------------------------

@@ -1,5 +1,6 @@
 #include "unity.h"
 #include "editor_history.h"
+#include "editor_cursor.h"
 #include "buffer.h"
 #include <stdlib.h>
 #include <string.h>
@@ -10,10 +11,12 @@
 
 static EditorHistory *h;
 static buffer        *buf;
+static EditorCursor   cur;
 
 void setUp(void) {
     h   = new_editor_history();
     buf = newBuf();
+    cursor_init(&cur);
 }
 
 void tearDown(void) {
@@ -67,7 +70,6 @@ static Action make_delete_cr(int row, int col) {
     return a;
 }
 
-// Populate row 0 of buf with the given string.
 static void set_row(buffer *b, int row, const char *text) {
     int len = (int)strlen(text);
     for (int i = 0; i < len; i++)
@@ -117,12 +119,10 @@ void test_record_multiple_grows_undo_stack(void) {
 }
 
 void test_record_clears_redo_stack(void) {
-    // Manually push something onto redo to simulate a prior undo.
     Action a = make_insert_char(0, 0, 'x');
     push_action(h->redo_stack, a);
     TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
 
-    // Recording a new action must wipe redo.
     Action b = make_insert_char(0, 1, 'y');
     history_record(h, b);
     TEST_ASSERT_EQUAL_size_t(0, h->redo_stack->size);
@@ -130,7 +130,7 @@ void test_record_clears_redo_stack(void) {
 
 void test_record_does_not_crash_on_null_history(void) {
     Action a = make_insert_char(0, 0, 'x');
-    history_record(NULL, a);  // must not crash
+    history_record(NULL, a);
 }
 
 // =============================================================================
@@ -138,24 +138,24 @@ void test_record_does_not_crash_on_null_history(void) {
 // =============================================================================
 
 void test_undo_returns_false_on_empty_undo_stack(void) {
-    TEST_ASSERT_FALSE(history_undo(h, buf));
+    TEST_ASSERT_FALSE(history_undo(h, buf, NULL));
 }
 
 void test_undo_returns_false_on_null_history(void) {
-    TEST_ASSERT_FALSE(history_undo(NULL, buf));
+    TEST_ASSERT_FALSE(history_undo(NULL, buf, NULL));
 }
 
 void test_undo_returns_false_on_null_buffer(void) {
     Action a = make_insert_char(0, 0, 'x');
     history_record(h, a);
-    TEST_ASSERT_FALSE(history_undo(h, NULL));
+    TEST_ASSERT_FALSE(history_undo(h, NULL, NULL));
 }
 
 void test_undo_returns_true_when_action_present(void) {
     set_row(buf, 0, "a");
     Action a = make_insert_char(0, 0, 'a');
     history_record(h, a);
-    TEST_ASSERT_TRUE(history_undo(h, buf));
+    TEST_ASSERT_TRUE(history_undo(h, buf, NULL));
 }
 
 // =============================================================================
@@ -163,15 +163,15 @@ void test_undo_returns_true_when_action_present(void) {
 // =============================================================================
 
 void test_redo_returns_false_on_empty_redo_stack(void) {
-    TEST_ASSERT_FALSE(history_redo(h, buf));
+    TEST_ASSERT_FALSE(history_redo(h, buf, NULL));
 }
 
 void test_redo_returns_false_on_null_history(void) {
-    TEST_ASSERT_FALSE(history_redo(NULL, buf));
+    TEST_ASSERT_FALSE(history_redo(NULL, buf, NULL));
 }
 
 void test_redo_returns_false_on_null_buffer(void) {
-    TEST_ASSERT_FALSE(history_redo(h, NULL));
+    TEST_ASSERT_FALSE(history_redo(h, NULL, NULL));
 }
 
 // =============================================================================
@@ -179,12 +179,9 @@ void test_redo_returns_false_on_null_buffer(void) {
 // =============================================================================
 
 void test_undo_insert_char_removes_character(void) {
-    // Simulate: user typed 'h' at col 0, buffer now contains "h"
     insertChar(&buf->rows[0], 0, 'h');
     history_record(h, make_insert_char(0, 0, 'h'));
-
-    history_undo(h, buf);
-
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
     TEST_ASSERT_EQUAL_CHAR('\0', buf->rows[0].line[0]);
 }
@@ -192,28 +189,22 @@ void test_undo_insert_char_removes_character(void) {
 void test_undo_insert_char_decrements_undo_stack(void) {
     insertChar(&buf->rows[0], 0, 'h');
     history_record(h, make_insert_char(0, 0, 'h'));
-
-    history_undo(h, buf);
-
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(0, h->undo_stack->size);
 }
 
 void test_undo_insert_char_pushes_onto_redo_stack(void) {
     insertChar(&buf->rows[0], 0, 'h');
     history_record(h, make_insert_char(0, 0, 'h'));
-
-    history_undo(h, buf);
-
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
 }
 
 void test_redo_insert_char_restores_character(void) {
     insertChar(&buf->rows[0], 0, 'h');
     history_record(h, make_insert_char(0, 0, 'h'));
-    history_undo(h, buf);
-
-    history_redo(h, buf);
-
+    history_undo(h, buf, NULL);
+    history_redo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(1, buf->rows[0].length);
     TEST_ASSERT_EQUAL_CHAR('h', buf->rows[0].line[0]);
 }
@@ -221,27 +212,24 @@ void test_redo_insert_char_restores_character(void) {
 void test_redo_insert_char_pushes_back_onto_undo_stack(void) {
     insertChar(&buf->rows[0], 0, 'h');
     history_record(h, make_insert_char(0, 0, 'h'));
-    history_undo(h, buf);
-
-    history_redo(h, buf);
-
+    history_undo(h, buf, NULL);
+    history_redo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(1, h->undo_stack->size);
     TEST_ASSERT_EQUAL_size_t(0, h->redo_stack->size);
 }
 
 void test_undo_redo_insert_char_multiple_times(void) {
-    // Type "hi", undo both, redo both, check buffer is "hi" again.
     insertChar(&buf->rows[0], 0, 'h');
     history_record(h, make_insert_char(0, 0, 'h'));
     insertChar(&buf->rows[0], 1, 'i');
     history_record(h, make_insert_char(0, 1, 'i'));
 
-    history_undo(h, buf);
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
 
-    history_redo(h, buf);
-    history_redo(h, buf);
+    history_redo(h, buf, NULL);
+    history_redo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(2, buf->rows[0].length);
     TEST_ASSERT_EQUAL_CHAR('h', buf->rows[0].line[0]);
     TEST_ASSERT_EQUAL_CHAR('i', buf->rows[0].line[1]);
@@ -252,13 +240,10 @@ void test_undo_redo_insert_char_multiple_times(void) {
 // =============================================================================
 
 void test_undo_delete_char_restores_character(void) {
-    // Buffer contains "ab". User deletes 'a' at col 0. Buffer is now "b".
     set_row(buf, 0, "ab");
     history_record(h, make_delete_char(0, 0, 'a'));
     deleteChar(buf, 0, 0);
-
-    history_undo(h, buf);
-
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(2, buf->rows[0].length);
     TEST_ASSERT_EQUAL_CHAR('a', buf->rows[0].line[0]);
     TEST_ASSERT_EQUAL_CHAR('b', buf->rows[0].line[1]);
@@ -268,9 +253,7 @@ void test_undo_delete_char_pushes_onto_redo_stack(void) {
     set_row(buf, 0, "ab");
     history_record(h, make_delete_char(0, 0, 'a'));
     deleteChar(buf, 0, 0);
-
-    history_undo(h, buf);
-
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
 }
 
@@ -278,10 +261,8 @@ void test_redo_delete_char_removes_character_again(void) {
     set_row(buf, 0, "ab");
     history_record(h, make_delete_char(0, 0, 'a'));
     deleteChar(buf, 0, 0);
-    history_undo(h, buf);  // buffer is "ab" again
-
-    history_redo(h, buf);  // should delete 'a' again
-
+    history_undo(h, buf, NULL);
+    history_redo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(1, buf->rows[0].length);
     TEST_ASSERT_EQUAL_CHAR('b', buf->rows[0].line[0]);
 }
@@ -291,11 +272,9 @@ void test_undo_redo_delete_char_cycle(void) {
     history_record(h, make_delete_char(0, 1, 'b'));
     deleteChar(buf, 0, 1);
     TEST_ASSERT_EQUAL_STRING("ac", buf->rows[0].line);
-
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_STRING("abc", buf->rows[0].line);
-
-    history_redo(h, buf);
+    history_redo(h, buf, NULL);
     TEST_ASSERT_EQUAL_STRING("ac", buf->rows[0].line);
 }
 
@@ -304,15 +283,11 @@ void test_undo_redo_delete_char_cycle(void) {
 // =============================================================================
 
 void test_undo_insert_cr_merges_rows(void) {
-    // Buffer row 0 is "hello". insertCR at col 3 splits to "hel" / "lo".
     set_row(buf, 0, "hello");
     insertCR(buf, 0, 3);
     history_record(h, make_insert_cr(0, 3));
-
     TEST_ASSERT_EQUAL_INT(2, buf->numrows);
-
-    history_undo(h, buf);
-
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(1, buf->numrows);
     TEST_ASSERT_EQUAL_STRING("hello", buf->rows[0].line);
 }
@@ -321,9 +296,7 @@ void test_undo_insert_cr_pushes_onto_redo_stack(void) {
     set_row(buf, 0, "hello");
     insertCR(buf, 0, 3);
     history_record(h, make_insert_cr(0, 3));
-
-    history_undo(h, buf);
-
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
 }
 
@@ -331,11 +304,9 @@ void test_redo_insert_cr_splits_row_again(void) {
     set_row(buf, 0, "hello");
     insertCR(buf, 0, 3);
     history_record(h, make_insert_cr(0, 3));
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(1, buf->numrows);
-
-    history_redo(h, buf);
-
+    history_redo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(2, buf->numrows);
     TEST_ASSERT_EQUAL_STRING("hel", buf->rows[0].line);
     TEST_ASSERT_EQUAL_STRING("lo",  buf->rows[1].line);
@@ -346,17 +317,17 @@ void test_undo_redo_insert_cr_cycle(void) {
     insertCR(buf, 0, 2);
     history_record(h, make_insert_cr(0, 2));
 
-    history_undo(h, buf);
-    TEST_ASSERT_EQUAL_INT(1,      buf->numrows);
+    history_undo(h, buf, NULL);
+    TEST_ASSERT_EQUAL_INT(1,         buf->numrows);
     TEST_ASSERT_EQUAL_STRING("abcd", buf->rows[0].line);
 
-    history_redo(h, buf);
-    TEST_ASSERT_EQUAL_INT(2,    buf->numrows);
+    history_redo(h, buf, NULL);
+    TEST_ASSERT_EQUAL_INT(2,       buf->numrows);
     TEST_ASSERT_EQUAL_STRING("ab", buf->rows[0].line);
     TEST_ASSERT_EQUAL_STRING("cd", buf->rows[1].line);
 
-    history_undo(h, buf);
-    TEST_ASSERT_EQUAL_INT(1,      buf->numrows);
+    history_undo(h, buf, NULL);
+    TEST_ASSERT_EQUAL_INT(1,         buf->numrows);
     TEST_ASSERT_EQUAL_STRING("abcd", buf->rows[0].line);
 }
 
@@ -365,20 +336,14 @@ void test_undo_redo_insert_cr_cycle(void) {
 // =============================================================================
 
 void test_undo_delete_cr_splits_rows(void) {
-    // Start with two rows "hel" and "lo". deleteCR merges them to "hello".
-    // The action records row=0, col=3 (length of row 0 before merge).
     set_row(buf, 0, "hel");
-    insertCR(buf, 0, 3);  // creates row 1 = ""
-    // Manually set row 1 content
+    insertCR(buf, 0, 3);
     set_row(buf, 1, "lo");
-
     history_record(h, make_delete_cr(0, 3));
     deleteCR(buf, 1);
     TEST_ASSERT_EQUAL_INT(1, buf->numrows);
     TEST_ASSERT_EQUAL_STRING("hello", buf->rows[0].line);
-
-    history_undo(h, buf);
-
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(2, buf->numrows);
     TEST_ASSERT_EQUAL_STRING("hel", buf->rows[0].line);
     TEST_ASSERT_EQUAL_STRING("lo",  buf->rows[1].line);
@@ -388,11 +353,9 @@ void test_undo_delete_cr_pushes_onto_redo_stack(void) {
     set_row(buf, 0, "hel");
     insertCR(buf, 0, 3);
     set_row(buf, 1, "lo");
-
     history_record(h, make_delete_cr(0, 3));
     deleteCR(buf, 1);
-    history_undo(h, buf);
-
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
 }
 
@@ -400,14 +363,11 @@ void test_redo_delete_cr_merges_rows_again(void) {
     set_row(buf, 0, "hel");
     insertCR(buf, 0, 3);
     set_row(buf, 1, "lo");
-
     history_record(h, make_delete_cr(0, 3));
     deleteCR(buf, 1);
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(2, buf->numrows);
-
-    history_redo(h, buf);
-
+    history_redo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(1, buf->numrows);
     TEST_ASSERT_EQUAL_STRING("hello", buf->rows[0].line);
 }
@@ -417,27 +377,25 @@ void test_redo_delete_cr_merges_rows_again(void) {
 // =============================================================================
 
 void test_undo_sequence_restores_in_reverse_order(void) {
-    // Type "hi" character by character, then undo both.
     insertChar(&buf->rows[0], 0, 'h');
     history_record(h, make_insert_char(0, 0, 'h'));
     insertChar(&buf->rows[0], 1, 'i');
     history_record(h, make_insert_char(0, 1, 'i'));
 
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(1, buf->rows[0].length);
     TEST_ASSERT_EQUAL_CHAR('h', buf->rows[0].line[0]);
 
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
 }
 
 void test_new_edit_after_undo_clears_redo(void) {
     insertChar(&buf->rows[0], 0, 'a');
     history_record(h, make_insert_char(0, 0, 'a'));
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
 
-    // New edit — redo must be wiped.
     insertChar(&buf->rows[0], 0, 'b');
     history_record(h, make_insert_char(0, 0, 'b'));
     TEST_ASSERT_EQUAL_size_t(0, h->redo_stack->size);
@@ -446,19 +404,15 @@ void test_new_edit_after_undo_clears_redo(void) {
 void test_redo_is_unavailable_after_new_edit(void) {
     insertChar(&buf->rows[0], 0, 'a');
     history_record(h, make_insert_char(0, 0, 'a'));
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
 
-    // New edit invalidates redo history.
     insertChar(&buf->rows[0], 0, 'b');
     history_record(h, make_insert_char(0, 0, 'b'));
 
-    TEST_ASSERT_FALSE(history_redo(h, buf));
+    TEST_ASSERT_FALSE(history_redo(h, buf, NULL));
 }
 
 void test_full_undo_redo_cycle_mixed_actions(void) {
-    // Type "ab", press Enter, type "c".
-    // Buffer should be:  row0="ab"  row1="c"
-    // Undo all four actions and verify we return to empty buffer.
     insertChar(&buf->rows[0], 0, 'a');
     history_record(h, make_insert_char(0, 0, 'a'));
     insertChar(&buf->rows[0], 1, 'b');
@@ -472,24 +426,23 @@ void test_full_undo_redo_cycle_mixed_actions(void) {
     TEST_ASSERT_EQUAL_STRING("ab", buf->rows[0].line);
     TEST_ASSERT_EQUAL_STRING("c",  buf->rows[1].line);
 
-    history_undo(h, buf);  // undo insert 'c'
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_STRING("", buf->rows[1].line);
 
-    history_undo(h, buf);  // undo insert CR
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(1, buf->numrows);
     TEST_ASSERT_EQUAL_STRING("ab", buf->rows[0].line);
 
-    history_undo(h, buf);  // undo insert 'b'
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_STRING("a", buf->rows[0].line);
 
-    history_undo(h, buf);  // undo insert 'a'
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
 
-    // Now redo everything and verify we're back to the final state.
-    history_redo(h, buf);
-    history_redo(h, buf);
-    history_redo(h, buf);
-    history_redo(h, buf);
+    history_redo(h, buf, NULL);
+    history_redo(h, buf, NULL);
+    history_redo(h, buf, NULL);
+    history_redo(h, buf, NULL);
 
     TEST_ASSERT_EQUAL_INT(2, buf->numrows);
     TEST_ASSERT_EQUAL_STRING("ab", buf->rows[0].line);
@@ -499,22 +452,18 @@ void test_full_undo_redo_cycle_mixed_actions(void) {
 void test_undo_beyond_history_returns_false(void) {
     insertChar(&buf->rows[0], 0, 'x');
     history_record(h, make_insert_char(0, 0, 'x'));
-    history_undo(h, buf);
-
-    // Stack is now empty — further undos must return false.
-    TEST_ASSERT_FALSE(history_undo(h, buf));
-    TEST_ASSERT_FALSE(history_undo(h, buf));
+    history_undo(h, buf, NULL);
+    TEST_ASSERT_FALSE(history_undo(h, buf, NULL));
+    TEST_ASSERT_FALSE(history_undo(h, buf, NULL));
 }
 
 void test_redo_beyond_history_returns_false(void) {
     insertChar(&buf->rows[0], 0, 'x');
     history_record(h, make_insert_char(0, 0, 'x'));
-    history_undo(h, buf);
-    history_redo(h, buf);
-
-    // Redo stack is now empty — further redos must return false.
-    TEST_ASSERT_FALSE(history_redo(h, buf));
-    TEST_ASSERT_FALSE(history_redo(h, buf));
+    history_undo(h, buf, NULL);
+    history_redo(h, buf, NULL);
+    TEST_ASSERT_FALSE(history_redo(h, buf, NULL));
+    TEST_ASSERT_FALSE(history_redo(h, buf, NULL));
 }
 
 void test_alternating_undo_redo_is_stable(void) {
@@ -522,9 +471,9 @@ void test_alternating_undo_redo_is_stable(void) {
     history_record(h, make_insert_char(0, 0, 'z'));
 
     for (int i = 0; i < 10; i++) {
-        history_undo(h, buf);
+        history_undo(h, buf, NULL);
         TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
-        history_redo(h, buf);
+        history_redo(h, buf, NULL);
         TEST_ASSERT_EQUAL_INT(1, buf->rows[0].length);
         TEST_ASSERT_EQUAL_CHAR('z', buf->rows[0].line[0]);
     }
@@ -541,11 +490,9 @@ void test_undo_reduces_undo_stack_by_one(void) {
         history_record(h, a);
     }
     TEST_ASSERT_EQUAL_size_t(3, h->undo_stack->size);
-
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(2, h->undo_stack->size);
-
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(1, h->undo_stack->size);
 }
 
@@ -555,15 +502,13 @@ void test_redo_reduces_redo_stack_by_one(void) {
         insertChar(&buf->rows[0], i, (char)('a' + i));
         history_record(h, a);
     }
-    history_undo(h, buf);
-    history_undo(h, buf);
-    history_undo(h, buf);
+    history_undo(h, buf, NULL);
+    history_undo(h, buf, NULL);
+    history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(3, h->redo_stack->size);
-
-    history_redo(h, buf);
+    history_redo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(2, h->redo_stack->size);
-
-    history_redo(h, buf);
+    history_redo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
 }
 
@@ -572,18 +517,185 @@ void test_undo_all_then_redo_all_stack_sizes(void) {
         insertChar(&buf->rows[0], i, (char)('a' + i));
         history_record(h, make_insert_char(0, i, (char)('a' + i)));
     }
-
     for (int i = 0; i < 4; i++)
-        history_undo(h, buf);
-
+        history_undo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(0, h->undo_stack->size);
     TEST_ASSERT_EQUAL_size_t(4, h->redo_stack->size);
-
     for (int i = 0; i < 4; i++)
-        history_redo(h, buf);
-
+        history_redo(h, buf, NULL);
     TEST_ASSERT_EQUAL_size_t(4, h->undo_stack->size);
     TEST_ASSERT_EQUAL_size_t(0, h->redo_stack->size);
+}
+
+// =============================================================================
+// Cursor state -- undo restores position
+// =============================================================================
+
+void test_undo_insert_char_restores_cursor_position(void) {
+    insertChar(&buf->rows[0], 0, 'A');
+    history_record(h, make_insert_char(0, 0, 'A'));
+    cur.pos.row = 0;
+    cur.pos.col = 1;   // cursor advanced right after insert
+
+    history_undo(h, buf, &cur);
+
+    TEST_ASSERT_EQUAL_INT(0, cur.pos.row);
+    TEST_ASSERT_EQUAL_INT(0, cur.pos.col);
+}
+
+void test_undo_delete_char_restores_cursor_position(void) {
+    set_row(buf, 0, "AB");
+    history_record(h, make_delete_char(0, 1, 'B'));
+    deleteChar(buf, 0, 1);
+    cur.pos.row = 0;
+    cur.pos.col = 1;
+
+    history_undo(h, buf, &cur);
+
+    TEST_ASSERT_EQUAL_INT(0, cur.pos.row);
+    TEST_ASSERT_EQUAL_INT(1, cur.pos.col);
+}
+
+void test_undo_insert_cr_restores_cursor_to_split_point(void) {
+    set_row(buf, 0, "hello");
+    insertCR(buf, 0, 3);
+    history_record(h, make_insert_cr(0, 3));
+    cur.pos.row = 1;
+    cur.pos.col = 0;   // cursor on the new row after Enter
+
+    history_undo(h, buf, &cur);
+
+    // Should snap back to the split point (row 0, col 3)
+    TEST_ASSERT_EQUAL_INT(0, cur.pos.row);
+    TEST_ASSERT_EQUAL_INT(3, cur.pos.col);
+}
+
+void test_undo_delete_cr_restores_cursor_to_join_point(void) {
+    set_row(buf, 0, "hel");
+    insertCR(buf, 0, 3);
+    set_row(buf, 1, "lo");
+    history_record(h, make_delete_cr(0, 3));
+    deleteCR(buf, 1);
+    cur.pos.row = 0;
+    cur.pos.col = 5;
+
+    history_undo(h, buf, &cur);
+
+    // Should snap back to the join point (row 0, col 3)
+    TEST_ASSERT_EQUAL_INT(0, cur.pos.row);
+    TEST_ASSERT_EQUAL_INT(3, cur.pos.col);
+}
+
+// =============================================================================
+// Cursor state -- redo restores position
+// =============================================================================
+
+void test_redo_insert_char_restores_cursor_position(void) {
+    insertChar(&buf->rows[0], 0, 'A');
+    history_record(h, make_insert_char(0, 0, 'A'));
+    history_undo(h, buf, &cur);
+
+    cur.pos.col = 99;   // dirty it to prove redo moves it
+    history_redo(h, buf, &cur);
+
+    TEST_ASSERT_EQUAL_INT(0, cur.pos.row);
+    TEST_ASSERT_EQUAL_INT(0, cur.pos.col);
+}
+
+void test_redo_insert_cr_restores_cursor_to_split_point(void) {
+    set_row(buf, 0, "hello");
+    insertCR(buf, 0, 3);
+    history_record(h, make_insert_cr(0, 3));
+    history_undo(h, buf, &cur);
+
+    cur.pos.row = 99;
+    cur.pos.col = 99;
+    history_redo(h, buf, &cur);
+
+    TEST_ASSERT_EQUAL_INT(0, cur.pos.row);
+    TEST_ASSERT_EQUAL_INT(3, cur.pos.col);
+}
+
+// =============================================================================
+// Cursor state -- NULL cursor is safe
+// =============================================================================
+
+void test_undo_with_null_cursor_does_not_crash(void) {
+    insertChar(&buf->rows[0], 0, 'x');
+    history_record(h, make_insert_char(0, 0, 'x'));
+    TEST_ASSERT_TRUE(history_undo(h, buf, NULL));
+}
+
+void test_redo_with_null_cursor_does_not_crash(void) {
+    insertChar(&buf->rows[0], 0, 'x');
+    history_record(h, make_insert_char(0, 0, 'x'));
+    history_undo(h, buf, NULL);
+    TEST_ASSERT_TRUE(history_redo(h, buf, NULL));
+}
+
+// =============================================================================
+// Cursor state -- clamping after undo/redo
+// =============================================================================
+
+void test_undo_clamps_cursor_when_line_shrinks(void) {
+    insertChar(&buf->rows[0], 0, 'A');
+    history_record(h, make_insert_char(0, 0, 'A'));
+    insertChar(&buf->rows[0], 1, 'B');
+    history_record(h, make_insert_char(0, 1, 'B'));
+    insertChar(&buf->rows[0], 2, 'C');
+    history_record(h, make_insert_char(0, 2, 'C'));
+    cur.pos.col = 3;
+
+    history_undo(h, buf, &cur);   // line becomes "AB" (len 2)
+    TEST_ASSERT_TRUE(cur.pos.col <= buf->rows[cur.pos.row].length);
+
+    history_undo(h, buf, &cur);   // line becomes "A" (len 1)
+    TEST_ASSERT_TRUE(cur.pos.col <= buf->rows[cur.pos.row].length);
+
+    history_undo(h, buf, &cur);   // line becomes "" (len 0)
+    TEST_ASSERT_TRUE(cur.pos.col <= buf->rows[cur.pos.row].length);
+}
+
+void test_undo_clamps_cursor_row_when_row_removed(void) {
+    set_row(buf, 0, "hi");
+    insertCR(buf, 0, 2);
+    history_record(h, make_insert_cr(0, 2));
+    cur.pos.row = 1;
+    cur.pos.col = 0;
+
+    history_undo(h, buf, &cur);
+
+    // Row 1 no longer exists -- cursor must be within valid range
+    TEST_ASSERT_TRUE(cur.pos.row < buf->numrows);
+    TEST_ASSERT_TRUE(cur.pos.col <= buf->rows[cur.pos.row].length);
+}
+
+// =============================================================================
+// Cursor state -- desired_col sync
+// =============================================================================
+
+void test_undo_syncs_desired_col_to_restored_position(void) {
+    insertChar(&buf->rows[0], 0, 'A');
+    history_record(h, make_insert_char(0, 0, 'A'));
+    cur.pos.col     = 1;
+    cur.desired_col = 1;
+
+    history_undo(h, buf, &cur);
+
+    // desired_col must match pos.col so future vertical movement
+    // doesn't jump to a stale column
+    TEST_ASSERT_EQUAL_INT(cur.pos.col, cur.desired_col);
+}
+
+void test_redo_syncs_desired_col_to_restored_position(void) {
+    insertChar(&buf->rows[0], 0, 'A');
+    history_record(h, make_insert_char(0, 0, 'A'));
+    history_undo(h, buf, &cur);
+
+    cur.desired_col = 99;   // dirty it
+    history_redo(h, buf, &cur);
+
+    TEST_ASSERT_EQUAL_INT(cur.pos.col, cur.desired_col);
 }
 
 // =============================================================================
@@ -654,6 +766,28 @@ int main(void) {
     RUN_TEST(test_undo_reduces_undo_stack_by_one);
     RUN_TEST(test_redo_reduces_redo_stack_by_one);
     RUN_TEST(test_undo_all_then_redo_all_stack_sizes);
+
+    // Cursor -- undo restores position
+    RUN_TEST(test_undo_insert_char_restores_cursor_position);
+    RUN_TEST(test_undo_delete_char_restores_cursor_position);
+    RUN_TEST(test_undo_insert_cr_restores_cursor_to_split_point);
+    RUN_TEST(test_undo_delete_cr_restores_cursor_to_join_point);
+
+    // Cursor -- redo restores position
+    RUN_TEST(test_redo_insert_char_restores_cursor_position);
+    RUN_TEST(test_redo_insert_cr_restores_cursor_to_split_point);
+
+    // Cursor -- NULL safety
+    RUN_TEST(test_undo_with_null_cursor_does_not_crash);
+    RUN_TEST(test_redo_with_null_cursor_does_not_crash);
+
+    // Cursor -- clamping
+    RUN_TEST(test_undo_clamps_cursor_when_line_shrinks);
+    RUN_TEST(test_undo_clamps_cursor_row_when_row_removed);
+
+    // Cursor -- desired_col sync
+    RUN_TEST(test_undo_syncs_desired_col_to_restored_position);
+    RUN_TEST(test_redo_syncs_desired_col_to_restored_position);
 
     return UNITY_END();
 }

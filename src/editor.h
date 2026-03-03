@@ -4,11 +4,13 @@
 #include <stdbool.h>
 #include "buffer.h"
 #include "editor_history.h"
+#include "editor_cursor.h"
 
 // The Editor owns a buffer and its undo/redo history.
 typedef struct {
     buffer        *buf;
     EditorHistory *history;
+    EditorCursor   cursor;
 } Editor;
 
 // Construction / destruction

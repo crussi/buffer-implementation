@@ -1,0 +1,1805 @@
+
+
+// MakeFile
+
+CC          = gcc
+WINCC       = x86_64-w64-mingw32-gcc
+
+CFLAGS      = -Wall -Wextra -Werror -Wpedantic -std=c99
+LFLAGS      = -lncurses
+WINLFLAGS   = -L/mingw64/lib -lncursesw
+WINCFLAGS   = -Wall -Wextra -Werror -Wpedantic -std=c99 -I/mingw64/include/ncurses
+TARGET      = buffer-implementation
+WIN_TARGET  = buffer-implementation.exe
+
+
+UNITY_DIR   = unity/src
+TEST_DIR    = tests
+BUILD_DIR   = build
+
+# All sources except main.c — tests supply their own entry point
+LIB_SOURCES = $(filter-out src/main.c, $(wildcard src/*.c))
+ALL_SOURCES = $(wildcard src/*.c)
+
+TEST_SOURCES = $(wildcard $(TEST_DIR)/*.c)
+TEST_TARGETS = $(patsubst $(TEST_DIR)/%.c, $(BUILD_DIR)/%, $(TEST_SOURCES))
+
+TEST_CFLAGS  = -Wall -Wextra -std=c99 -g -Isrc -I$(UNITY_DIR)
+
+.PHONY: all compile windows test clean
+
+all: clean compile
+
+compile:
+	$(CC) $(CFLAGS) $(ALL_SOURCES) $(LFLAGS) -o $(TARGET)
+
+windows:
+	$(WINCC) $(WINCFLAGS) $(ALL_SOURCES) $(WINLFLAGS) -o $(WIN_TARGET)
+
+# Build and run every test binary
+test: $(TEST_TARGETS)
+	@for t in $(TEST_TARGETS); do \
+		echo "\nRunning $$t..."; \
+		./$$t; \
+	done
+
+# Pattern rule: tests/test_foo.c -> build/test_foo
+$(BUILD_DIR)/%: $(TEST_DIR)/%.c $(LIB_SOURCES) \
+                $(UNITY_DIR)/unity.c \
+                $(UNITY_DIR)/unity_fixture.c \
+                $(UNITY_DIR)/unity_memory.c | $(BUILD_DIR)
+	$(CC) $(TEST_CFLAGS) $^ -o $@
+
+
+$(BUILD_DIR):
+	mkdir -p $(BUILD_DIR)
+
+clean:
+	rm -f $(TARGET) $(WIN_TARGET)
+	rm -rf $(BUILD_DIR)
+// test_action_stack.c
+#include "unity.h"
+#include "unity_fixture.h"
+
+#include "action_stack.h"
+#include <stdlib.h>
+#include <string.h>
+
+// ---------------------------------------------------------------------------
+// Group + Fixtures
+// ---------------------------------------------------------------------------
+
+static ActionStack *stack;
+
+TEST_GROUP(ACTION_STACK);
+
+TEST_SETUP(ACTION_STACK)
+{
+    stack = new_action_stack(0, 0);
+}
+
+TEST_TEAR_DOWN(ACTION_STACK)
+{
+    free_action_stack(stack);
+    stack = NULL;
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+static Action make_char_action(ActionType type, int row, int col, char c) {
+    Action a;
+    a.type         = type;
+    a.position.row = row;
+    a.position.col = col;
+    a.character    = c;
+    a.text         = NULL;
+    return a;
+}
+
+static Action make_text_action(ActionType type, int row, int col,
+                               const char *text) {
+    Action a;
+    a.type         = type;
+    a.position.row = row;
+    a.position.col = col;
+    a.character    = '\0';
+    a.text         = text ? strdup(text) : NULL;
+    return a;
+}
+
+// ---------------------------------------------------------------------------
+// new / free
+// ---------------------------------------------------------------------------
+
+TEST(ACTION_STACK, new_action_stack_returns_non_null) {
+    TEST_ASSERT_NOT_NULL(stack);
+}
+
+TEST(ACTION_STACK, new_action_stack_is_empty) {
+    TEST_ASSERT_TRUE(action_stack_is_empty(stack));
+}
+
+TEST(ACTION_STACK, new_action_stack_has_zero_size) {
+    TEST_ASSERT_EQUAL_size_t(0, stack->size);
+}
+
+TEST(ACTION_STACK, new_action_stack_custom_initial_capacity) {
+    ActionStack *s = new_action_stack(64, 0);
+    TEST_ASSERT_NOT_NULL(s);
+    TEST_ASSERT_EQUAL_size_t(64, s->capacity);
+    free_action_stack(s);
+}
+
+TEST(ACTION_STACK, new_action_stack_max_capacity_clamps_initial) {
+    ActionStack *s = new_action_stack(128, 8);
+    TEST_ASSERT_NOT_NULL(s);
+    TEST_ASSERT_EQUAL_size_t(8, s->capacity);
+    free_action_stack(s);
+}
+
+// ---------------------------------------------------------------------------
+// push
+// ---------------------------------------------------------------------------
+
+TEST(ACTION_STACK, push_returns_true_on_success) {
+    Action a = make_char_action(INSERT_CHAR, 0, 0, 'x');
+    TEST_ASSERT_TRUE(push_action(stack, a));
+}
+
+TEST(ACTION_STACK, push_increases_size) {
+    Action a = make_char_action(INSERT_CHAR, 0, 0, 'x');
+    push_action(stack, a);
+    TEST_ASSERT_EQUAL_size_t(1, stack->size);
+}
+
+TEST(ACTION_STACK, push_multiple_increases_size) {
+    for (int i = 0; i < 10; i++) {
+        Action a = make_char_action(INSERT_CHAR, 0, i, (char)('a' + i));
+        push_action(stack, a);
+    }
+    TEST_ASSERT_EQUAL_size_t(10, stack->size);
+}
+
+TEST(ACTION_STACK, push_null_stack_returns_false) {
+    Action a = make_char_action(INSERT_CHAR, 0, 0, 'x');
+    TEST_ASSERT_FALSE(push_action(NULL, a));
+}
+
+TEST(ACTION_STACK, push_triggers_growth_beyond_default_capacity) {
+    for (int i = 0; i < 32; i++) {
+        Action a = make_char_action(INSERT_CHAR, 0, i, 'a');
+        TEST_ASSERT_TRUE(push_action(stack, a));
+    }
+    TEST_ASSERT_EQUAL_size_t(32, stack->size);
+    TEST_ASSERT_TRUE(stack->capacity >= 32);
+}
+
+// ---------------------------------------------------------------------------
+// pop
+// ---------------------------------------------------------------------------
+
+TEST(ACTION_STACK, pop_returns_false_on_empty_stack) {
+    Action out;
+    TEST_ASSERT_FALSE(pop_action(stack, &out));
+}
+
+TEST(ACTION_STACK, pop_returns_true_when_item_present) {
+    Action a = make_char_action(INSERT_CHAR, 1, 2, 'z');
+    push_action(stack, a);
+    Action out;
+    TEST_ASSERT_TRUE(pop_action(stack, &out));
+}
+
+TEST(ACTION_STACK, pop_decreases_size) {
+    Action a = make_char_action(INSERT_CHAR, 0, 0, 'a');
+    push_action(stack, a);
+    Action out;
+    pop_action(stack, &out);
+    TEST_ASSERT_EQUAL_size_t(0, stack->size);
+}
+
+TEST(ACTION_STACK, pop_returns_correct_action) {
+    Action a = make_char_action(DELETE_CHAR, 3, 7, 'q');
+    push_action(stack, a);
+    Action out;
+    pop_action(stack, &out);
+    TEST_ASSERT_EQUAL_INT(DELETE_CHAR,  out.type);
+    TEST_ASSERT_EQUAL_INT(3,            out.position.row);
+    TEST_ASSERT_EQUAL_INT(7,            out.position.col);
+    TEST_ASSERT_EQUAL_CHAR('q',         out.character);
+}
+
+TEST(ACTION_STACK, pop_is_lifo_order) {
+    for (int i = 0; i < 5; i++) {
+        Action a = make_char_action(INSERT_CHAR, 0, i, (char)('a' + i));
+        push_action(stack, a);
+    }
+    for (int i = 4; i >= 0; i--) {
+        Action out;
+        pop_action(stack, &out);
+        TEST_ASSERT_EQUAL_CHAR((char)('a' + i), out.character);
+    }
+}
+
+TEST(ACTION_STACK, pop_null_stack_returns_false) {
+    Action out;
+    TEST_ASSERT_FALSE(pop_action(NULL, &out));
+}
+
+// ---------------------------------------------------------------------------
+// peek
+// ---------------------------------------------------------------------------
+
+TEST(ACTION_STACK, peek_returns_false_on_empty_stack) {
+    Action out;
+    TEST_ASSERT_FALSE(peek_action(stack, &out));
+}
+
+TEST(ACTION_STACK, peek_returns_true_when_item_present) {
+    Action a = make_char_action(INSERT_CHAR, 0, 0, 'p');
+    push_action(stack, a);
+    Action out;
+    TEST_ASSERT_TRUE(peek_action(stack, &out));
+}
+
+TEST(ACTION_STACK, peek_does_not_change_size) {
+    Action a = make_char_action(INSERT_CHAR, 0, 0, 'p');
+    push_action(stack, a);
+    Action out;
+    peek_action(stack, &out);
+    TEST_ASSERT_EQUAL_size_t(1, stack->size);
+}
+
+TEST(ACTION_STACK, peek_returns_top_item) {
+    Action a = make_char_action(INSERT_CR,  2, 0, '\0');
+    Action b = make_char_action(DELETE_CR,  5, 0, '\0');
+    push_action(stack, a);
+    push_action(stack, b);
+    Action out;
+    peek_action(stack, &out);
+    TEST_ASSERT_EQUAL_INT(DELETE_CR, out.type);
+    TEST_ASSERT_EQUAL_INT(5,         out.position.row);
+}
+
+TEST(ACTION_STACK, peek_null_stack_returns_false) {
+    Action out;
+    TEST_ASSERT_FALSE(peek_action(NULL, &out));
+}
+
+// ---------------------------------------------------------------------------
+// is_empty
+// ---------------------------------------------------------------------------
+
+TEST(ACTION_STACK, is_empty_true_on_new_stack) {
+    TEST_ASSERT_TRUE(action_stack_is_empty(stack));
+}
+
+TEST(ACTION_STACK, is_empty_false_after_push) {
+    Action a = make_char_action(INSERT_CHAR, 0, 0, 'x');
+    push_action(stack, a);
+    TEST_ASSERT_FALSE(action_stack_is_empty(stack));
+}
+
+TEST(ACTION_STACK, is_empty_true_after_push_and_pop) {
+    Action a = make_char_action(INSERT_CHAR, 0, 0, 'x');
+    push_action(stack, a);
+    Action out;
+    pop_action(stack, &out);
+    TEST_ASSERT_TRUE(action_stack_is_empty(stack));
+}
+
+TEST(ACTION_STACK, is_empty_true_for_null_stack) {
+    TEST_ASSERT_TRUE(action_stack_is_empty(NULL));
+}
+
+// ---------------------------------------------------------------------------
+// reset
+// ---------------------------------------------------------------------------
+
+TEST(ACTION_STACK, reset_clears_size) {
+    for (int i = 0; i < 5; i++) {
+        Action a = make_char_action(INSERT_CHAR, 0, i, 'a');
+        push_action(stack, a);
+    }
+    reset_action_stack(stack);
+    TEST_ASSERT_EQUAL_size_t(0, stack->size);
+}
+
+TEST(ACTION_STACK, reset_preserves_capacity) {
+    for (int i = 0; i < 5; i++) {
+        Action a = make_char_action(INSERT_CHAR, 0, i, 'a');
+        push_action(stack, a);
+    }
+    size_t cap = stack->capacity;
+    reset_action_stack(stack);
+    TEST_ASSERT_EQUAL_size_t(cap, stack->capacity);
+}
+
+TEST(ACTION_STACK, reset_then_push_works) {
+    Action a = make_char_action(INSERT_CHAR, 0, 0, 'r');
+    push_action(stack, a);
+    reset_action_stack(stack);
+    Action b = make_char_action(INSERT_CHAR, 0, 0, 's');
+    TEST_ASSERT_TRUE(push_action(stack, b));
+    TEST_ASSERT_EQUAL_size_t(1, stack->size);
+}
+
+TEST(ACTION_STACK, reset_null_does_not_crash) {
+    reset_action_stack(NULL);
+}
+
+// ---------------------------------------------------------------------------
+// text payload
+// ---------------------------------------------------------------------------
+
+TEST(ACTION_STACK, push_pop_text_payload_round_trips) {
+    Action a = make_text_action(INSERT_CHAR, 0, 0, "hello");
+    push_action(stack, a);
+    Action out;
+    pop_action(stack, &out);
+    TEST_ASSERT_NOT_NULL(out.text);
+    TEST_ASSERT_EQUAL_STRING("hello", out.text);
+    free(out.text);
+}
+
+TEST(ACTION_STACK, reset_frees_text_payloads) {
+    Action a = make_text_action(INSERT_CHAR, 0, 0, "undo this");
+    push_action(stack, a);
+    reset_action_stack(stack);
+    TEST_ASSERT_EQUAL_size_t(0, stack->size);
+}
+
+TEST(ACTION_STACK, free_action_handles_null_text) {
+    Action a = make_char_action(INSERT_CHAR, 0, 0, 'x');
+    // free_action(&a);  // must not crash; commented out in original
+}
+
+// ---------------------------------------------------------------------------
+// max_capacity
+// ---------------------------------------------------------------------------
+
+TEST(ACTION_STACK, max_capacity_size_never_exceeds_limit) {
+    ActionStack *s = new_action_stack(4, 4);
+    for (int i = 0; i < 6; i++) {
+        Action a = make_char_action(INSERT_CHAR, 0, i, (char)('a' + i));
+        push_action(s, a);
+    }
+    TEST_ASSERT_EQUAL_size_t(4, s->size);
+    free_action_stack(s);
+}
+
+TEST(ACTION_STACK, max_capacity_sliding_window_keeps_newest) {
+    ActionStack *s = new_action_stack(2, 2);
+    for (int i = 0; i < 4; i++) {
+        Action a = make_char_action(INSERT_CHAR, 0, i, (char)('a' + i));
+        push_action(s, a);
+    }
+    Action out;
+    pop_action(s, &out);
+    TEST_ASSERT_EQUAL_CHAR('d', out.character);
+    pop_action(s, &out);
+    TEST_ASSERT_EQUAL_CHAR('c', out.character);
+    free_action_stack(s);
+}
+
+// ---------------------------------------------------------------------------
+// free_action_stack
+// ---------------------------------------------------------------------------
+
+TEST(ACTION_STACK, free_null_stack_does_not_crash) {
+    free_action_stack(NULL);
+}
+
+// ---------------------------------------------------------------------------
+// Group Runner
+// ---------------------------------------------------------------------------
+
+TEST_GROUP_RUNNER(ACTION_STACK)
+{
+    RUN_TEST_CASE(ACTION_STACK, new_action_stack_returns_non_null);
+    RUN_TEST_CASE(ACTION_STACK, new_action_stack_is_empty);
+    RUN_TEST_CASE(ACTION_STACK, new_action_stack_has_zero_size);
+    RUN_TEST_CASE(ACTION_STACK, new_action_stack_custom_initial_capacity);
+    RUN_TEST_CASE(ACTION_STACK, new_action_stack_max_capacity_clamps_initial);
+
+    RUN_TEST_CASE(ACTION_STACK, push_returns_true_on_success);
+    RUN_TEST_CASE(ACTION_STACK, push_increases_size);
+    RUN_TEST_CASE(ACTION_STACK, push_multiple_increases_size);
+    RUN_TEST_CASE(ACTION_STACK, push_null_stack_returns_false);
+    RUN_TEST_CASE(ACTION_STACK, push_triggers_growth_beyond_default_capacity);
+
+    RUN_TEST_CASE(ACTION_STACK, pop_returns_false_on_empty_stack);
+    RUN_TEST_CASE(ACTION_STACK, pop_returns_true_when_item_present);
+    RUN_TEST_CASE(ACTION_STACK, pop_decreases_size);
+    RUN_TEST_CASE(ACTION_STACK, pop_returns_correct_action);
+    RUN_TEST_CASE(ACTION_STACK, pop_is_lifo_order);
+    RUN_TEST_CASE(ACTION_STACK, pop_null_stack_returns_false);
+
+    RUN_TEST_CASE(ACTION_STACK, peek_returns_false_on_empty_stack);
+    RUN_TEST_CASE(ACTION_STACK, peek_returns_true_when_item_present);
+    RUN_TEST_CASE(ACTION_STACK, peek_does_not_change_size);
+    RUN_TEST_CASE(ACTION_STACK, peek_returns_top_item);
+    RUN_TEST_CASE(ACTION_STACK, peek_null_stack_returns_false);
+
+    RUN_TEST_CASE(ACTION_STACK, is_empty_true_on_new_stack);
+    RUN_TEST_CASE(ACTION_STACK, is_empty_false_after_push);
+    RUN_TEST_CASE(ACTION_STACK, is_empty_true_after_push_and_pop);
+    RUN_TEST_CASE(ACTION_STACK, is_empty_true_for_null_stack);
+
+    RUN_TEST_CASE(ACTION_STACK, reset_clears_size);
+    RUN_TEST_CASE(ACTION_STACK, reset_preserves_capacity);
+    RUN_TEST_CASE(ACTION_STACK, reset_then_push_works);
+    RUN_TEST_CASE(ACTION_STACK, reset_null_does_not_crash);
+
+    RUN_TEST_CASE(ACTION_STACK, push_pop_text_payload_round_trips);
+    RUN_TEST_CASE(ACTION_STACK, reset_frees_text_payloads);
+    RUN_TEST_CASE(ACTION_STACK, free_action_handles_null_text);
+
+    RUN_TEST_CASE(ACTION_STACK, max_capacity_size_never_exceeds_limit);
+    RUN_TEST_CASE(ACTION_STACK, max_capacity_sliding_window_keeps_newest);
+
+    RUN_TEST_CASE(ACTION_STACK, free_null_stack_does_not_crash);
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+static void RunAllTests(void)
+{
+    RUN_TEST_GROUP(ACTION_STACK);
+}
+
+int main(int argc, const char *argv[])
+{
+    return UnityMain(argc, argv, RunAllTests);
+}
+
+
+// test_buffer.c
+#include "unity.h"
+#include "unity_fixture.h"
+#include "buffer.h"
+#include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
+
+TEST_GROUP(BUFFER);
+
+TEST_SETUP(BUFFER)
+{
+    // no global setup needed
+}
+
+TEST_TEAR_DOWN(BUFFER)
+{
+    // no global teardown needed
+}
+
+// ---------------------------------------------------------------------------
+// newBuf
+// ---------------------------------------------------------------------------
+
+TEST(BUFFER, newBuf_returns_non_null)
+{
+    buffer *buf = newBuf();
+    TEST_ASSERT_NOT_NULL(buf);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, newBuf_has_one_empty_row)
+{
+    buffer *buf = newBuf();
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
+    TEST_ASSERT_EQUAL_STRING("", buf->rows[0].line);
+    freeBuf(buf);
+}
+
+// ---------------------------------------------------------------------------
+// insertChar
+// ---------------------------------------------------------------------------
+
+TEST(BUFFER, insertChar_appends_to_empty_row)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'H');
+    TEST_ASSERT_EQUAL_INT(1, buf->rows[0].length);
+    TEST_ASSERT_EQUAL_CHAR('H', buf->rows[0].line[0]);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, insertChar_builds_string)
+{
+    buffer *buf = newBuf();
+    const char *word = "Hello";
+    for (int i = 0; i < 5; i++)
+        insertChar(&buf->rows[0], i, word[i]);
+    TEST_ASSERT_EQUAL_STRING("Hello", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_INT(5, buf->rows[0].length);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, insertChar_inserts_in_middle)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    insertChar(&buf->rows[0], 1, 'C');
+    insertChar(&buf->rows[0], 1, 'B');
+    TEST_ASSERT_EQUAL_STRING("ABC", buf->rows[0].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, insertChar_clamps_negative_index)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'X');
+    insertChar(&buf->rows[0], -5, 'Y');
+    TEST_ASSERT_EQUAL_CHAR('Y', buf->rows[0].line[0]);
+    TEST_ASSERT_EQUAL_CHAR('X', buf->rows[0].line[1]);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, insertChar_clamps_past_end)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    insertChar(&buf->rows[0], 100, 'B');
+    TEST_ASSERT_EQUAL_STRING("AB", buf->rows[0].line);
+    freeBuf(buf);
+}
+
+// ---------------------------------------------------------------------------
+// deleteChar
+// ---------------------------------------------------------------------------
+
+TEST(BUFFER, deleteChar_removes_character)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    insertChar(&buf->rows[0], 1, 'B');
+    insertChar(&buf->rows[0], 2, 'C');
+    deleteChar(buf, 0, 1);
+    TEST_ASSERT_EQUAL_STRING("AC", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_INT(2, buf->rows[0].length);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, deleteChar_removes_first)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    insertChar(&buf->rows[0], 1, 'B');
+    deleteChar(buf, 0, 0);
+    TEST_ASSERT_EQUAL_STRING("B", buf->rows[0].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, deleteChar_removes_last)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    insertChar(&buf->rows[0], 1, 'B');
+    deleteChar(buf, 0, 1);
+    TEST_ASSERT_EQUAL_STRING("A", buf->rows[0].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, deleteChar_out_of_bounds_does_nothing)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    deleteChar(buf, 0, 5);
+    TEST_ASSERT_EQUAL_STRING("A", buf->rows[0].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, deleteChar_negative_at_merges_rows)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    insertChar(&buf->rows[0], 1, 'B');
+    insertCR(buf, 0, 2);
+    insertChar(&buf->rows[1], 0, 'C');
+    insertChar(&buf->rows[1], 1, 'D');
+    deleteChar(buf, 1, -1);
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("ABCD", buf->rows[0].line);
+    freeBuf(buf);
+}
+
+// ---------------------------------------------------------------------------
+// insertCR / deleteCR
+// ---------------------------------------------------------------------------
+
+TEST(BUFFER, insertCR_splits_row)
+{
+    buffer *buf = newBuf();
+    const char *word = "Hello";
+    for (int i = 0; i < 5; i++)
+        insertChar(&buf->rows[0], i, word[i]);
+
+    insertCR(buf, 0, 2);
+    TEST_ASSERT_EQUAL_INT(2, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("He", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("llo", buf->rows[1].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, insertCR_at_beginning)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    insertCR(buf, 0, 0);
+    TEST_ASSERT_EQUAL_INT(2, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("A", buf->rows[1].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, insertCR_at_end)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    insertCR(buf, 0, 1);
+    TEST_ASSERT_EQUAL_INT(2, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("A", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("", buf->rows[1].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, deleteCR_merges_rows)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    insertCR(buf, 0, 1);
+    insertChar(&buf->rows[1], 0, 'B');
+    deleteCR(buf, 1);
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("AB", buf->rows[0].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, deleteCR_row0_does_nothing)
+{
+    buffer *buf = newBuf();
+    insertChar(&buf->rows[0], 0, 'A');
+    deleteCR(buf, 0);
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("A", buf->rows[0].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, insertCR_multiple_splits)
+{
+    buffer *buf = newBuf();
+    const char *word = "ABCDE";
+    for (int i = 0; i < 5; i++)
+        insertChar(&buf->rows[0], i, word[i]);
+
+    insertCR(buf, 0, 2);
+    insertCR(buf, 1, 1);
+    TEST_ASSERT_EQUAL_INT(3, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("AB", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("C", buf->rows[1].line);
+    TEST_ASSERT_EQUAL_STRING("DE", buf->rows[2].line);
+    freeBuf(buf);
+}
+
+// ---------------------------------------------------------------------------
+// fileToBuf / bufToFile
+// ---------------------------------------------------------------------------
+
+TEST(BUFFER, fileToBuf_reads_lines)
+{
+    FILE *f = tmpfile();
+    fputs("line1\nline2\nline3\n", f);
+    rewind(f);
+
+    buffer *buf = fileToBuf(f);
+    fclose(f);
+
+    TEST_ASSERT_NOT_NULL(buf);
+    TEST_ASSERT_EQUAL_INT(3, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("line1", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("line2", buf->rows[1].line);
+    TEST_ASSERT_EQUAL_STRING("line3", buf->rows[2].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, fileToBuf_empty_file_gives_one_empty_row)
+{
+    FILE *f = tmpfile();
+    rewind(f);
+    buffer *buf = fileToBuf(f);
+    fclose(f);
+
+    TEST_ASSERT_NOT_NULL(buf);
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("", buf->rows[0].line);
+    freeBuf(buf);
+}
+
+TEST(BUFFER, bufToFile_roundtrip)
+{
+    buffer *buf = newBuf();
+    const char *words[] = { "alpha", "beta", "gamma" };
+
+    for (int i = 0; i < (int)strlen(words[0]); i++)
+        insertChar(&buf->rows[0], i, words[0][i]);
+
+    insertCR(buf, 0, buf->rows[0].length);
+    for (int i = 0; i < (int)strlen(words[1]); i++)
+        insertChar(&buf->rows[1], i, words[1][i]);
+
+    insertCR(buf, 1, buf->rows[1].length);
+    for (int i = 0; i < (int)strlen(words[2]); i++)
+        insertChar(&buf->rows[2], i, words[2][i]);
+
+    FILE *f = bufToFile(buf);
+    TEST_ASSERT_NOT_NULL(f);
+
+    buffer *buf2 = fileToBuf(f);
+    fclose(f);
+
+    TEST_ASSERT_EQUAL_INT(3, buf2->numrows);
+    TEST_ASSERT_EQUAL_STRING("alpha", buf2->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("beta",  buf2->rows[1].line);
+    TEST_ASSERT_EQUAL_STRING("gamma", buf2->rows[2].line);
+
+    freeBuf(buf);
+    freeBuf(buf2);
+}
+
+TEST(BUFFER, bufToFile_null_buf_returns_null)
+{
+    FILE *f = bufToFile(NULL);
+    if (f) fclose(f);
+}
+
+// ---------------------------------------------------------------------------
+// fileGetline
+// ---------------------------------------------------------------------------
+
+TEST(BUFFER, fileGetline_reads_line_with_newline)
+{
+    FILE *f = tmpfile();
+    fputs("hello\n", f);
+    rewind(f);
+
+    char *line = NULL;
+    size_t n = 0;
+    long int r = fileGetline(&line, &n, f);
+
+    TEST_ASSERT_TRUE(r > 0);
+    TEST_ASSERT_EQUAL_STRING("hello\n", line);
+
+    free(line);
+    fclose(f);
+}
+
+TEST(BUFFER, fileGetline_reads_line_without_trailing_newline)
+{
+    FILE *f = tmpfile();
+    fputs("world", f);
+    rewind(f);
+
+    char *line = NULL;
+    size_t n = 0;
+    long int r = fileGetline(&line, &n, f);
+
+    TEST_ASSERT_EQUAL_INT(5, r);
+    TEST_ASSERT_EQUAL_STRING("world", line);
+
+    free(line);
+    fclose(f);
+}
+
+TEST(BUFFER, fileGetline_empty_stream_returns_minus1)
+{
+    FILE *f = tmpfile();
+    rewind(f);
+
+    char *line = NULL;
+    size_t n = 0;
+    long int r = fileGetline(&line, &n, f);
+
+    TEST_ASSERT_EQUAL_INT(-1, r);
+    free(line);
+    fclose(f);
+}
+
+TEST(BUFFER, fileGetline_null_args_return_minus1)
+{
+    TEST_ASSERT_EQUAL_INT(-1, fileGetline(NULL, NULL, NULL));
+}
+
+// ---------------------------------------------------------------------------
+// freeBuf
+// ---------------------------------------------------------------------------
+
+TEST(BUFFER, freeBuf_null_does_not_crash)
+{
+    freeBuf(NULL);
+}
+
+// ---------------------------------------------------------------------------
+// Runner
+// ---------------------------------------------------------------------------
+
+TEST_GROUP_RUNNER(BUFFER)
+{
+    RUN_TEST_CASE(BUFFER, newBuf_returns_non_null);
+    RUN_TEST_CASE(BUFFER, newBuf_has_one_empty_row);
+
+    RUN_TEST_CASE(BUFFER, insertChar_appends_to_empty_row);
+    RUN_TEST_CASE(BUFFER, insertChar_builds_string);
+    RUN_TEST_CASE(BUFFER, insertChar_inserts_in_middle);
+    RUN_TEST_CASE(BUFFER, insertChar_clamps_negative_index);
+    RUN_TEST_CASE(BUFFER, insertChar_clamps_past_end);
+
+    RUN_TEST_CASE(BUFFER, deleteChar_removes_character);
+    RUN_TEST_CASE(BUFFER, deleteChar_removes_first);
+    RUN_TEST_CASE(BUFFER, deleteChar_removes_last);
+    RUN_TEST_CASE(BUFFER, deleteChar_out_of_bounds_does_nothing);
+    RUN_TEST_CASE(BUFFER, deleteChar_negative_at_merges_rows);
+
+    RUN_TEST_CASE(BUFFER, insertCR_splits_row);
+    RUN_TEST_CASE(BUFFER, insertCR_at_beginning);
+    RUN_TEST_CASE(BUFFER, insertCR_at_end);
+    RUN_TEST_CASE(BUFFER, deleteCR_merges_rows);
+    RUN_TEST_CASE(BUFFER, deleteCR_row0_does_nothing);
+    RUN_TEST_CASE(BUFFER, insertCR_multiple_splits);
+
+    RUN_TEST_CASE(BUFFER, fileToBuf_reads_lines);
+    RUN_TEST_CASE(BUFFER, fileToBuf_empty_file_gives_one_empty_row);
+    RUN_TEST_CASE(BUFFER, bufToFile_roundtrip);
+    RUN_TEST_CASE(BUFFER, bufToFile_null_buf_returns_null);
+
+    RUN_TEST_CASE(BUFFER, fileGetline_reads_line_with_newline);
+    RUN_TEST_CASE(BUFFER, fileGetline_reads_line_without_trailing_newline);
+    RUN_TEST_CASE(BUFFER, fileGetline_empty_stream_returns_minus1);
+    RUN_TEST_CASE(BUFFER, fileGetline_null_args_return_minus1);
+
+    RUN_TEST_CASE(BUFFER, freeBuf_null_does_not_crash);
+}
+
+// ---------------------------------------------------------------------------
+// main
+// ---------------------------------------------------------------------------
+
+static void RunAllTests(void)
+{
+    RUN_TEST_GROUP(BUFFER);
+}
+
+int main(int argc, const char *argv[])
+{
+    return UnityMain(argc, argv, RunAllTests);
+}
+
+
+// test_editor.c
+#include "unity.h"
+#include "unity_fixture.h"
+
+#include "editor.h"
+#include "buffer.h"
+#include "editor_history.h"
+#include <string.h>
+#include <stdio.h>
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+// Build an Editor whose row 0 contains the given string.
+static Editor *make_editor_with_text(const char *text) {
+    Editor *e = editor_new_empty();
+    if (!e) return NULL;
+    for (int i = 0; text[i] != '\0'; i++)
+        editorInsertChar(e, 0, i, text[i]);
+    return e;
+}
+
+// Convenience: return a copy of row `r`'s text (caller must NOT free — valid
+// until the next buffer mutation).
+static const char *row_text(Editor *e, int r) {
+    return e->buf->rows[r].line;
+}
+
+// ---------------------------------------------------------------------------
+// Unity Fixture Setup / Teardown
+// ---------------------------------------------------------------------------
+
+TEST_GROUP(EDITOR);
+
+TEST_SETUP(EDITOR) {
+    // previously setUp()
+}
+
+TEST_TEAR_DOWN(EDITOR) {
+    // previously tearDown()
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+// editor_new_empty
+TEST(EDITOR, editor_new_empty_not_null) {
+    Editor *e = editor_new_empty();
+    TEST_ASSERT_NOT_NULL(e);
+    editor_free(e);
+}
+
+TEST(EDITOR, editor_new_empty_has_buf_and_history) {
+    Editor *e = editor_new_empty();
+    TEST_ASSERT_NOT_NULL(e->buf);
+    TEST_ASSERT_NOT_NULL(e->history);
+    editor_free(e);
+}
+
+TEST(EDITOR, editor_new_empty_one_empty_row) {
+    Editor *e = editor_new_empty();
+    TEST_ASSERT_EQUAL_INT(1, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("", e->buf->rows[0].line);
+    editor_free(e);
+}
+
+// editor_new_from_file
+TEST(EDITOR, editor_new_from_file_reads_content) {
+    FILE *f = tmpfile();
+    fputs("hello\nworld\n", f);
+    rewind(f);
+
+    Editor *e = editor_new_from_file(f);
+    fclose(f);
+
+    TEST_ASSERT_NOT_NULL(e);
+    TEST_ASSERT_EQUAL_INT(2, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("hello", row_text(e, 0));
+    TEST_ASSERT_EQUAL_STRING("world", row_text(e, 1));
+    editor_free(e);
+}
+
+TEST(EDITOR, editor_new_from_file_null_returns_null) {
+    Editor *e = editor_new_from_file(NULL);
+    TEST_ASSERT_NULL(e);
+}
+
+// editor_free
+TEST(EDITOR, editor_free_null_does_not_crash) {
+    editor_free(NULL);
+}
+
+// editorInsertChar
+TEST(EDITOR, editorInsertChar_appends_single) {
+    Editor *e = editor_new_empty();
+    editorInsertChar(e, 0, 0, 'X');
+    TEST_ASSERT_EQUAL_STRING("X", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorInsertChar_builds_word) {
+    Editor *e = editor_new_empty();
+    const char *word = "Hello";
+    for (int i = 0; word[i]; i++)
+        editorInsertChar(e, 0, i, word[i]);
+    TEST_ASSERT_EQUAL_STRING("Hello", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorInsertChar_inserts_in_middle) {
+    Editor *e = make_editor_with_text("AC");
+    editorInsertChar(e, 0, 1, 'B');
+    TEST_ASSERT_EQUAL_STRING("ABC", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorInsertChar_records_action) {
+    Editor *e = editor_new_empty();
+    editorInsertChar(e, 0, 0, 'Z');
+    TEST_ASSERT_FALSE(action_stack_is_empty(e->history->undo_stack));
+    editor_free(e);
+}
+
+// editorDeleteChar
+TEST(EDITOR, editorDeleteChar_removes_char) {
+    Editor *e = make_editor_with_text("ABC");
+    editorDeleteChar(e, 0, 1);
+    TEST_ASSERT_EQUAL_STRING("AC", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorDeleteChar_removes_first) {
+    Editor *e = make_editor_with_text("AB");
+    editorDeleteChar(e, 0, 0);
+    TEST_ASSERT_EQUAL_STRING("B", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorDeleteChar_removes_last) {
+    Editor *e = make_editor_with_text("AB");
+    editorDeleteChar(e, 0, 1);
+    TEST_ASSERT_EQUAL_STRING("A", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorDeleteChar_records_action) {
+    Editor *e = make_editor_with_text("A");
+    editorDeleteChar(e, 0, 0);
+    TEST_ASSERT_FALSE(action_stack_is_empty(e->history->undo_stack));
+    editor_free(e);
+}
+
+// editorInsertCR
+TEST(EDITOR, editorInsertCR_splits_row) {
+    Editor *e = make_editor_with_text("Hello");
+    editorInsertCR(e, 0, 2);
+    TEST_ASSERT_EQUAL_INT(2, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("He",  row_text(e, 0));
+    TEST_ASSERT_EQUAL_STRING("llo", row_text(e, 1));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorInsertCR_at_beginning) {
+    Editor *e = make_editor_with_text("Hi");
+    editorInsertCR(e, 0, 0);
+    TEST_ASSERT_EQUAL_INT(2, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("",   row_text(e, 0));
+    TEST_ASSERT_EQUAL_STRING("Hi", row_text(e, 1));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorInsertCR_at_end) {
+    Editor *e = make_editor_with_text("Hi");
+    editorInsertCR(e, 0, 2);
+    TEST_ASSERT_EQUAL_INT(2, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("Hi", row_text(e, 0));
+    TEST_ASSERT_EQUAL_STRING("",   row_text(e, 1));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorInsertCR_records_action) {
+    Editor *e = make_editor_with_text("AB");
+    editorInsertCR(e, 0, 1);
+    TEST_ASSERT_FALSE(action_stack_is_empty(e->history->undo_stack));
+    editor_free(e);
+}
+
+// editorDeleteCR
+TEST(EDITOR, editorDeleteCR_merges_rows) {
+    Editor *e = make_editor_with_text("Hello");
+    editorInsertCR(e, 0, 2);
+    editorDeleteCR(e, 1);
+    TEST_ASSERT_EQUAL_INT(1, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("Hello", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorDeleteCR_records_action) {
+    Editor *e = make_editor_with_text("AB");
+    editorInsertCR(e, 0, 1);
+    size_t before = e->history->undo_stack->size;
+    editorDeleteCR(e, 1);
+    TEST_ASSERT_GREATER_THAN(before, e->history->undo_stack->size);
+    editor_free(e);
+}
+
+// Undo — INSERT_CHAR
+TEST(EDITOR, editorUndo_insert_char) {
+    Editor *e = editor_new_empty();
+    editorInsertChar(e, 0, 0, 'A');
+    bool ok = editorUndo(e);
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_STRING("", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorUndo_multiple_insert_chars) {
+    Editor *e = editor_new_empty();
+    editorInsertChar(e, 0, 0, 'A');
+    editorInsertChar(e, 0, 1, 'B');
+    editorInsertChar(e, 0, 2, 'C');
+    editorUndo(e);
+    TEST_ASSERT_EQUAL_STRING("AB", row_text(e, 0));
+    editorUndo(e);
+    TEST_ASSERT_EQUAL_STRING("A", row_text(e, 0));
+    editorUndo(e);
+    TEST_ASSERT_EQUAL_STRING("", row_text(e, 0));
+    editor_free(e);
+}
+
+// Undo — DELETE_CHAR
+TEST(EDITOR, editorUndo_delete_char_restores) {
+    Editor *e = make_editor_with_text("AB");
+    editorDeleteChar(e, 0, 1);
+    editorUndo(e);
+    TEST_ASSERT_EQUAL_STRING("AB", row_text(e, 0));
+    editor_free(e);
+}
+
+// Undo — INSERT_CR
+TEST(EDITOR, editorUndo_insert_cr_merges_back) {
+    Editor *e = make_editor_with_text("Hello");
+    editorInsertCR(e, 0, 2);
+    editorUndo(e);
+    TEST_ASSERT_EQUAL_INT(1, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("Hello", row_text(e, 0));
+    editor_free(e);
+}
+
+// Undo — DELETE_CR
+TEST(EDITOR, editorUndo_delete_cr_restores_split) {
+    Editor *e = make_editor_with_text("Hello");
+    editorInsertCR(e, 0, 2);
+    editorDeleteCR(e, 1);
+    editorUndo(e);
+    TEST_ASSERT_EQUAL_INT(2, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("He",  row_text(e, 0));
+    TEST_ASSERT_EQUAL_STRING("llo", row_text(e, 1));
+    editor_free(e);
+}
+
+// Undo empty
+TEST(EDITOR, editorUndo_empty_history_returns_false) {
+    Editor *e = editor_new_empty();
+    bool ok = editorUndo(e);
+    TEST_ASSERT_FALSE(ok);
+    editor_free(e);
+}
+
+// Redo
+TEST(EDITOR, editorRedo_after_undo_insert_char) {
+    Editor *e = editor_new_empty();
+    editorInsertChar(e, 0, 0, 'A');
+    editorUndo(e);
+    bool ok = editorRedo(e);
+    TEST_ASSERT_TRUE(ok);
+    TEST_ASSERT_EQUAL_STRING("A", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorRedo_after_undo_delete_char) {
+    Editor *e = make_editor_with_text("AB");
+    editorDeleteChar(e, 0, 1);
+    editorUndo(e);
+    editorRedo(e);
+    TEST_ASSERT_EQUAL_STRING("A", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorRedo_after_undo_insert_cr) {
+    Editor *e = make_editor_with_text("Hello");
+    editorInsertCR(e, 0, 2);
+    editorUndo(e);
+    editorRedo(e);
+    TEST_ASSERT_EQUAL_INT(2, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("He",  row_text(e, 0));
+    TEST_ASSERT_EQUAL_STRING("llo", row_text(e, 1));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorRedo_after_undo_delete_cr) {
+    Editor *e = make_editor_with_text("Hello");
+    editorInsertCR(e, 0, 2);
+    editorDeleteCR(e, 1);
+    editorUndo(e);
+    editorRedo(e);
+    TEST_ASSERT_EQUAL_INT(1, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("Hello", row_text(e, 0));
+    editor_free(e);
+}
+
+TEST(EDITOR, editorRedo_empty_redo_stack_returns_false) {
+    Editor *e = editor_new_empty();
+    bool ok = editorRedo(e);
+    TEST_ASSERT_FALSE(ok);
+    editor_free(e);
+}
+
+// Redo stack cleared on new edit
+TEST(EDITOR, new_edit_clears_redo_stack) {
+    Editor *e = editor_new_empty();
+    editorInsertChar(e, 0, 0, 'A');
+    editorUndo(e);
+    editorInsertChar(e, 0, 0, 'B');
+    bool ok = editorRedo(e);
+    TEST_ASSERT_FALSE(ok);
+    editor_free(e);
+}
+
+// Full undo/redo round trip
+TEST(EDITOR, full_undo_redo_round_trip) {
+    Editor *e = editor_new_empty();
+    editorInsertChar(e, 0, 0, 'A');
+    editorInsertChar(e, 0, 1, 'B');
+    editorInsertChar(e, 0, 2, 'C');
+    TEST_ASSERT_EQUAL_STRING("ABC", row_text(e, 0));
+
+    editorUndo(e);
+    editorUndo(e);
+    editorUndo(e);
+    TEST_ASSERT_EQUAL_STRING("", row_text(e, 0));
+
+    editorRedo(e);
+    editorRedo(e);
+    editorRedo(e);
+    TEST_ASSERT_EQUAL_STRING("ABC", row_text(e, 0));
+
+    editor_free(e);
+}
+
+TEST(EDITOR, undo_redo_with_cr) {
+    Editor *e = make_editor_with_text("HelloWorld");
+
+    editorInsertCR(e, 0, 5);
+    TEST_ASSERT_EQUAL_INT(2, e->buf->numrows);
+
+    editorUndo(e);
+    TEST_ASSERT_EQUAL_INT(1, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("HelloWorld", row_text(e, 0));
+
+    editorRedo(e);
+    TEST_ASSERT_EQUAL_INT(2, e->buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("Hello", row_text(e, 0));
+    TEST_ASSERT_EQUAL_STRING("World", row_text(e, 1));
+
+    editor_free(e);
+}
+
+// ---------------------------------------------------------------------------
+// Unity Fixture Runner
+// ---------------------------------------------------------------------------
+
+TEST_GROUP_RUNNER(EDITOR) {
+    RUN_TEST_CASE(EDITOR, editor_new_empty_not_null);
+    RUN_TEST_CASE(EDITOR, editor_new_empty_has_buf_and_history);
+    RUN_TEST_CASE(EDITOR, editor_new_empty_one_empty_row);
+
+    RUN_TEST_CASE(EDITOR, editor_new_from_file_reads_content);
+    RUN_TEST_CASE(EDITOR, editor_new_from_file_null_returns_null);
+
+    RUN_TEST_CASE(EDITOR, editor_free_null_does_not_crash);
+
+    RUN_TEST_CASE(EDITOR, editorInsertChar_appends_single);
+    RUN_TEST_CASE(EDITOR, editorInsertChar_builds_word);
+    RUN_TEST_CASE(EDITOR, editorInsertChar_inserts_in_middle);
+    RUN_TEST_CASE(EDITOR, editorInsertChar_records_action);
+
+    RUN_TEST_CASE(EDITOR, editorDeleteChar_removes_char);
+    RUN_TEST_CASE(EDITOR, editorDeleteChar_removes_first);
+    RUN_TEST_CASE(EDITOR, editorDeleteChar_removes_last);
+    RUN_TEST_CASE(EDITOR, editorDeleteChar_records_action);
+
+    RUN_TEST_CASE(EDITOR, editorInsertCR_splits_row);
+    RUN_TEST_CASE(EDITOR, editorInsertCR_at_beginning);
+    RUN_TEST_CASE(EDITOR, editorInsertCR_at_end);
+    RUN_TEST_CASE(EDITOR, editorInsertCR_records_action);
+
+    RUN_TEST_CASE(EDITOR, editorDeleteCR_merges_rows);
+    RUN_TEST_CASE(EDITOR, editorDeleteCR_records_action);
+
+    RUN_TEST_CASE(EDITOR, editorUndo_insert_char);
+    RUN_TEST_CASE(EDITOR, editorUndo_multiple_insert_chars);
+    RUN_TEST_CASE(EDITOR, editorUndo_delete_char_restores);
+    RUN_TEST_CASE(EDITOR, editorUndo_insert_cr_merges_back);
+    RUN_TEST_CASE(EDITOR, editorUndo_delete_cr_restores_split);
+    RUN_TEST_CASE(EDITOR, editorUndo_empty_history_returns_false);
+
+    RUN_TEST_CASE(EDITOR, editorRedo_after_undo_insert_char);
+    RUN_TEST_CASE(EDITOR, editorRedo_after_undo_delete_char);
+    RUN_TEST_CASE(EDITOR, editorRedo_after_undo_insert_cr);
+    RUN_TEST_CASE(EDITOR, editorRedo_after_undo_delete_cr);
+    RUN_TEST_CASE(EDITOR, editorRedo_empty_redo_stack_returns_false);
+
+    RUN_TEST_CASE(EDITOR, new_edit_clears_redo_stack);
+
+    RUN_TEST_CASE(EDITOR, full_undo_redo_round_trip);
+    RUN_TEST_CASE(EDITOR, undo_redo_with_cr);
+}
+
+int main(void) {
+    UNITY_BEGIN();
+    RUN_TEST_GROUP(EDITOR);
+    return UNITY_END();
+}
+
+
+// test_editor_history.c
+#include "unity.h"
+#include "unity_fixture.h"
+
+#include "editor_history.h"
+#include "buffer.h"
+#include <stdlib.h>
+#include <string.h>
+
+// =============================================================================
+// Fixtures
+// =============================================================================
+
+static EditorHistory *h;
+static buffer        *buf;
+
+TEST_GROUP(EDITOR_HISTORY);
+
+TEST_SETUP(EDITOR_HISTORY)
+{
+    h   = new_editor_history();
+    buf = newBuf();
+}
+
+TEST_TEAR_DOWN(EDITOR_HISTORY)
+{
+    free_editor_history(h);
+    freeBuf(buf);
+    h   = NULL;
+    buf = NULL;
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+static Action make_insert_char(int row, int col, char c) {
+    Action a;
+    a.type         = INSERT_CHAR;
+    a.position.row = row;
+    a.position.col = col;
+    a.character    = c;
+    a.text         = NULL;
+    return a;
+}
+
+static Action make_delete_char(int row, int col, char c) {
+    Action a;
+    a.type         = DELETE_CHAR;
+    a.position.row = row;
+    a.position.col = col;
+    a.character    = c;
+    a.text         = NULL;
+    return a;
+}
+
+static Action make_insert_cr(int row, int col) {
+    Action a;
+    a.type         = INSERT_CR;
+    a.position.row = row;
+    a.position.col = col;
+    a.character    = '\0';
+    a.text         = NULL;
+    return a;
+}
+
+static Action make_delete_cr(int row, int col) {
+    Action a;
+    a.type         = DELETE_CR;
+    a.position.row = row;
+    a.position.col = col;
+    a.character    = '\0';
+    a.text         = NULL;
+    return a;
+}
+
+static void set_row(buffer *b, int row, const char *text) {
+    int len = (int)strlen(text);
+    for (int i = 0; i < len; i++)
+        insertChar(&b->rows[row], i, text[i]);
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+// new_editor_history
+TEST(EDITOR_HISTORY, new_editor_history_returns_non_null) {
+    TEST_ASSERT_NOT_NULL(h);
+}
+
+TEST(EDITOR_HISTORY, new_editor_history_undo_stack_is_empty) {
+    TEST_ASSERT_TRUE(action_stack_is_empty(h->undo_stack));
+}
+
+TEST(EDITOR_HISTORY, new_editor_history_redo_stack_is_empty) {
+    TEST_ASSERT_TRUE(action_stack_is_empty(h->redo_stack));
+}
+
+// free_editor_history
+TEST(EDITOR_HISTORY, free_editor_history_null_does_not_crash) {
+    free_editor_history(NULL);
+}
+
+// history_record
+TEST(EDITOR_HISTORY, record_pushes_onto_undo_stack) {
+    Action a = make_insert_char(0, 0, 'x');
+    history_record(h, a);
+    TEST_ASSERT_EQUAL_size_t(1, h->undo_stack->size);
+}
+
+TEST(EDITOR_HISTORY, record_multiple_grows_undo_stack) {
+    for (int i = 0; i < 5; i++) {
+        Action a = make_insert_char(0, i, (char)('a' + i));
+        history_record(h, a);
+    }
+    TEST_ASSERT_EQUAL_size_t(5, h->undo_stack->size);
+}
+
+TEST(EDITOR_HISTORY, record_clears_redo_stack) {
+    Action a = make_insert_char(0, 0, 'x');
+    push_action(h->redo_stack, a);
+    TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
+
+    Action b = make_insert_char(0, 1, 'y');
+    history_record(h, b);
+    TEST_ASSERT_EQUAL_size_t(0, h->redo_stack->size);
+}
+
+TEST(EDITOR_HISTORY, record_does_not_crash_on_null_history) {
+    Action a = make_insert_char(0, 0, 'x');
+    history_record(NULL, a);
+}
+
+// undo return values
+TEST(EDITOR_HISTORY, undo_returns_false_on_empty_undo_stack) {
+    TEST_ASSERT_FALSE(history_undo(h, buf));
+}
+
+TEST(EDITOR_HISTORY, undo_returns_false_on_null_history) {
+    TEST_ASSERT_FALSE(history_undo(NULL, buf));
+}
+
+TEST(EDITOR_HISTORY, undo_returns_false_on_null_buffer) {
+    Action a = make_insert_char(0, 0, 'x');
+    history_record(h, a);
+    TEST_ASSERT_FALSE(history_undo(h, NULL));
+}
+
+TEST(EDITOR_HISTORY, undo_returns_true_when_action_present) {
+    set_row(buf, 0, "a");
+    Action a = make_insert_char(0, 0, 'a');
+    history_record(h, a);
+    TEST_ASSERT_TRUE(history_undo(h, buf));
+}
+
+// redo return values
+TEST(EDITOR_HISTORY, redo_returns_false_on_empty_redo_stack) {
+    TEST_ASSERT_FALSE(history_redo(h, buf));
+}
+
+TEST(EDITOR_HISTORY, redo_returns_false_on_null_history) {
+    TEST_ASSERT_FALSE(history_redo(NULL, buf));
+}
+
+TEST(EDITOR_HISTORY, redo_returns_false_on_null_buffer) {
+    TEST_ASSERT_FALSE(history_redo(h, NULL));
+}
+
+// INSERT_CHAR undo/redo
+TEST(EDITOR_HISTORY, undo_insert_char_removes_character) {
+    insertChar(&buf->rows[0], 0, 'h');
+    history_record(h, make_insert_char(0, 0, 'h'));
+
+    history_undo(h, buf);
+
+    TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
+    TEST_ASSERT_EQUAL_CHAR('\0', buf->rows[0].line[0]);
+}
+
+TEST(EDITOR_HISTORY, undo_insert_char_decrements_undo_stack) {
+    insertChar(&buf->rows[0], 0, 'h');
+    history_record(h, make_insert_char(0, 0, 'h'));
+
+    history_undo(h, buf);
+
+    TEST_ASSERT_EQUAL_size_t(0, h->undo_stack->size);
+}
+
+TEST(EDITOR_HISTORY, undo_insert_char_pushes_onto_redo_stack) {
+    insertChar(&buf->rows[0], 0, 'h');
+    history_record(h, make_insert_char(0, 0, 'h'));
+
+    history_undo(h, buf);
+
+    TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
+}
+
+TEST(EDITOR_HISTORY, redo_insert_char_restores_character) {
+    insertChar(&buf->rows[0], 0, 'h');
+    history_record(h, make_insert_char(0, 0, 'h'));
+    history_undo(h, buf);
+
+    history_redo(h, buf);
+
+    TEST_ASSERT_EQUAL_INT(1, buf->rows[0].length);
+    TEST_ASSERT_EQUAL_CHAR('h', buf->rows[0].line[0]);
+}
+
+TEST(EDITOR_HISTORY, redo_insert_char_pushes_back_onto_undo_stack) {
+    insertChar(&buf->rows[0], 0, 'h');
+    history_record(h, make_insert_char(0, 0, 'h'));
+    history_undo(h, buf);
+
+    history_redo(h, buf);
+
+    TEST_ASSERT_EQUAL_size_t(1, h->undo_stack->size);
+    TEST_ASSERT_EQUAL_size_t(0, h->redo_stack->size);
+}
+
+TEST(EDITOR_HISTORY, undo_redo_insert_char_multiple_times) {
+    insertChar(&buf->rows[0], 0, 'h');
+    history_record(h, make_insert_char(0, 0, 'h'));
+    insertChar(&buf->rows[0], 1, 'i');
+    history_record(h, make_insert_char(0, 1, 'i'));
+
+    history_undo(h, buf);
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
+
+    history_redo(h, buf);
+    history_redo(h, buf);
+    TEST_ASSERT_EQUAL_INT(2, buf->rows[0].length);
+    TEST_ASSERT_EQUAL_CHAR('h', buf->rows[0].line[0]);
+    TEST_ASSERT_EQUAL_CHAR('i', buf->rows[0].line[1]);
+}
+
+// DELETE_CHAR undo/redo
+TEST(EDITOR_HISTORY, undo_delete_char_restores_character) {
+    set_row(buf, 0, "ab");
+    history_record(h, make_delete_char(0, 0, 'a'));
+    deleteChar(buf, 0, 0);
+
+    history_undo(h, buf);
+
+    TEST_ASSERT_EQUAL_INT(2, buf->rows[0].length);
+    TEST_ASSERT_EQUAL_CHAR('a', buf->rows[0].line[0]);
+    TEST_ASSERT_EQUAL_CHAR('b', buf->rows[0].line[1]);
+}
+
+TEST(EDITOR_HISTORY, undo_delete_char_pushes_onto_redo_stack) {
+    set_row(buf, 0, "ab");
+    history_record(h, make_delete_char(0, 0, 'a'));
+    deleteChar(buf, 0, 0);
+
+    history_undo(h, buf);
+
+    TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
+}
+
+TEST(EDITOR_HISTORY, redo_delete_char_removes_character_again) {
+    set_row(buf, 0, "ab");
+    history_record(h, make_delete_char(0, 0, 'a'));
+    deleteChar(buf, 0, 0);
+    history_undo(h, buf);
+
+    history_redo(h, buf);
+
+    TEST_ASSERT_EQUAL_INT(1, buf->rows[0].length);
+    TEST_ASSERT_EQUAL_CHAR('b', buf->rows[0].line[0]);
+}
+
+TEST(EDITOR_HISTORY, undo_redo_delete_char_cycle) {
+    set_row(buf, 0, "abc");
+    history_record(h, make_delete_char(0, 1, 'b'));
+    deleteChar(buf, 0, 1);
+    TEST_ASSERT_EQUAL_STRING("ac", buf->rows[0].line);
+
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_STRING("abc", buf->rows[0].line);
+
+    history_redo(h, buf);
+    TEST_ASSERT_EQUAL_STRING("ac", buf->rows[0].line);
+}
+
+// INSERT_CR undo/redo
+TEST(EDITOR_HISTORY, undo_insert_cr_merges_rows) {
+    set_row(buf, 0, "hello");
+    insertCR(buf, 0, 3);
+    history_record(h, make_insert_cr(0, 3));
+
+    TEST_ASSERT_EQUAL_INT(2, buf->numrows);
+
+    history_undo(h, buf);
+
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("hello", buf->rows[0].line);
+}
+
+TEST(EDITOR_HISTORY, undo_insert_cr_pushes_onto_redo_stack) {
+    set_row(buf, 0, "hello");
+    insertCR(buf, 0, 3);
+    history_record(h, make_insert_cr(0, 3));
+
+    history_undo(h, buf);
+
+    TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
+}
+
+TEST(EDITOR_HISTORY, redo_insert_cr_splits_row_again) {
+    set_row(buf, 0, "hello");
+    insertCR(buf, 0, 3);
+    history_record(h, make_insert_cr(0, 3));
+    history_undo(h, buf);
+
+    history_redo(h, buf);
+
+    TEST_ASSERT_EQUAL_INT(2, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("hel", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("lo",  buf->rows[1].line);
+}
+
+TEST(EDITOR_HISTORY, undo_redo_insert_cr_cycle) {
+    set_row(buf, 0, "abcd");
+    insertCR(buf, 0, 2);
+    history_record(h, make_insert_cr(0, 2));
+
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("abcd", buf->rows[0].line);
+
+    history_redo(h, buf);
+    TEST_ASSERT_EQUAL_INT(2, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("ab", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("cd", buf->rows[1].line);
+
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("abcd", buf->rows[0].line);
+}
+
+// DELETE_CR undo/redo
+TEST(EDITOR_HISTORY, undo_delete_cr_splits_rows) {
+    set_row(buf, 0, "hel");
+    insertCR(buf, 0, 3);
+    set_row(buf, 1, "lo");
+
+    history_record(h, make_delete_cr(0, 3));
+    deleteCR(buf, 1);
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("hello", buf->rows[0].line);
+
+    history_undo(h, buf);
+
+    TEST_ASSERT_EQUAL_INT(2, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("hel", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("lo",  buf->rows[1].line);
+}
+
+TEST(EDITOR_HISTORY, undo_delete_cr_pushes_onto_redo_stack) {
+    set_row(buf, 0, "hel");
+    insertCR(buf, 0, 3);
+    set_row(buf, 1, "lo");
+
+    history_record(h, make_delete_cr(0, 3));
+    deleteCR(buf, 1);
+    history_undo(h, buf);
+
+    TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
+}
+
+TEST(EDITOR_HISTORY, redo_delete_cr_merges_rows_again) {
+    set_row(buf, 0, "hel");
+    insertCR(buf, 0, 3);
+    set_row(buf, 1, "lo");
+
+    history_record(h, make_delete_cr(0, 3));
+    deleteCR(buf, 1);
+    history_undo(h, buf);
+
+    history_redo(h, buf);
+
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("hello", buf->rows[0].line);
+}
+
+// Mixed sequences
+TEST(EDITOR_HISTORY, undo_sequence_restores_in_reverse_order) {
+    insertChar(&buf->rows[0], 0, 'h');
+    history_record(h, make_insert_char(0, 0, 'h'));
+    insertChar(&buf->rows[0], 1, 'i');
+    history_record(h, make_insert_char(0, 1, 'i'));
+
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_INT(1, buf->rows[0].length);
+    TEST_ASSERT_EQUAL_CHAR('h', buf->rows[0].line[0]);
+
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
+}
+
+TEST(EDITOR_HISTORY, new_edit_after_undo_clears_redo) {
+    insertChar(&buf->rows[0], 0, 'a');
+    history_record(h, make_insert_char(0, 0, 'a'));
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_size_t(1, h->redo_stack->size);
+
+    insertChar(&buf->rows[0], 0, 'b');
+    history_record(h, make_insert_char(0, 0, 'b'));
+    TEST_ASSERT_EQUAL_size_t(0, h->redo_stack->size);
+}
+
+TEST(EDITOR_HISTORY, redo_is_unavailable_after_new_edit) {
+    insertChar(&buf->rows[0], 0, 'a');
+    history_record(h, make_insert_char(0, 0, 'a'));
+    history_undo(h, buf);
+
+    insertChar(&buf->rows[0], 0, 'b');
+    history_record(h, make_insert_char(0, 0, 'b'));
+
+    TEST_ASSERT_FALSE(history_redo(h, buf));
+}
+
+TEST(EDITOR_HISTORY, full_undo_redo_cycle_mixed_actions) {
+    insertChar(&buf->rows[0], 0, 'a');
+    history_record(h, make_insert_char(0, 0, 'a'));
+    insertChar(&buf->rows[0], 1, 'b');
+    history_record(h, make_insert_char(0, 1, 'b'));
+    insertCR(buf, 0, 2);
+    history_record(h, make_insert_cr(0, 2));
+    insertChar(&buf->rows[1], 0, 'c');
+    history_record(h, make_insert_char(1, 0, 'c'));
+
+    TEST_ASSERT_EQUAL_INT(2, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("ab", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("c",  buf->rows[1].line);
+
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_STRING("", buf->rows[1].line);
+
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_INT(1, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("ab", buf->rows[0].line);
+
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_STRING("a", buf->rows[0].line);
+
+    history_undo(h, buf);
+    TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
+
+    history_redo(h, buf);
+    history_redo(h, buf);
+    history_redo(h, buf);
+    history_redo(h, buf);
+
+    TEST_ASSERT_EQUAL_INT(2, buf->numrows);
+    TEST_ASSERT_EQUAL_STRING("ab", buf->rows[0].line);
+    TEST_ASSERT_EQUAL_STRING("c",  buf->rows[1].line);
+}
+
+TEST(EDITOR_HISTORY, undo_beyond_history_returns_false) {
+    insertChar(&buf->rows[0], 0, 'x');
+    history_record(h, make_insert_char(0, 0, 'x'));
+    history_undo(h, buf);
+
+    TEST_ASSERT_FALSE(history_undo(h, buf));
+    TEST_ASSERT_FALSE(history_undo(h, buf));
+}
+
+TEST(EDITOR_HISTORY, redo_beyond_history_returns_false) {
+    insertChar(&buf->rows[0], 0, 'x');
+    history_record(h, make_insert_char(0, 0, 'x'));
+    history_undo(h, buf);
+    history_redo(h, buf);
+
+    TEST_ASSERT_FALSE(history_redo(h, buf));
+    TEST_ASSERT_FALSE(history_redo(h, buf));
+}
+
+TEST(EDITOR_HISTORY, alternating_undo_redo_is_stable) {
+    insertChar(&buf->rows[0], 0, 'z');
+    history_record(h, make_insert_char(0, 0, 'z'));
+
+    for (int i = 0; i < 10; i++) {
+        history_undo(h, buf);
+        TEST_ASSERT_EQUAL_INT(0, buf->rows[0].length);
+        history_redo(h, buf);
+        TEST_ASSERT_EQUAL_INT(1, buf->rows[0].length);
+        TEST_ASSERT_EQUAL_CHAR('z', buf->rows[0].line[0]);
+    }
+}
+
+// Stack invari
+
