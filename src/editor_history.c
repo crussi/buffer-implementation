@@ -2,87 +2,174 @@
 #include "editor_cursor.h"
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
 
 EditorHistory *new_editor_history(void) {
     EditorHistory *h = malloc(sizeof(EditorHistory));
     if (!h) return NULL;
-    h->undo_stack = new_action_stack(0, 0);
-    h->redo_stack = new_action_stack(0, 0);
-    if (!h->undo_stack || !h->redo_stack) { free_editor_history(h); return NULL; }
+    h->tree = undo_tree_new();
+    if (!h->tree) { free(h); return NULL; }
     return h;
-}
-
-void history_record(EditorHistory *h, Action a) {
-    if (!h) return;
-    reset_action_stack(h->redo_stack);
-    push_action(h->undo_stack, a);
-}
-
-bool history_undo(EditorHistory *h, buffer *buf, EditorCursor *c) {
-    if (!h || !buf) return false;
-    Action a;
-    if (!pop_action(h->undo_stack, &a)) return false;
-    switch (a.type) {
-        case INSERT_CHAR:
-            deleteChar(buf, a.position.row, a.position.col);
-            break;
-        case DELETE_CHAR:
-            insertChar(&buf->rows[a.position.row], a.position.col, a.character);
-            break;
-        case INSERT_CR:
-            deleteCR(buf, a.position.row + 1);
-            break;
-        case DELETE_CR:
-            insertCR(buf, a.position.row, a.position.col);
-            break;
-        case INSERT_TEXT: {
-            int len = a.text ? (int)strlen(a.text) : 0;
-            deleteTextRange(buf, a.position, len);
-            break;
-        }
-    }
-    if (c) {
-        c->pos         = a.position;
-        c->desired_col = a.position.col;
-        cursor_clamp(c, buf);
-    }
-    push_action(h->redo_stack, a);
-    return true;
-}
-
-bool history_redo(EditorHistory *h, buffer *buf, EditorCursor *c) {
-    if (!h || !buf) return false;
-    Action a;
-    if (!pop_action(h->redo_stack, &a)) return false;
-    switch (a.type) {
-        case INSERT_CHAR:
-            insertChar(&buf->rows[a.position.row], a.position.col, a.character);
-            break;
-        case DELETE_CHAR:
-            deleteChar(buf, a.position.row, a.position.col);
-            break;
-        case INSERT_CR:
-            insertCR(buf, a.position.row, a.position.col);
-            break;
-        case DELETE_CR:
-            deleteCR(buf, a.position.row + 1);
-            break;
-        case INSERT_TEXT:
-            insertText(buf, a.position.row, a.position.col, a.text ? a.text : "");
-            break;
-    }
-    if (c) {
-        c->pos         = a.position;
-        c->desired_col = a.position.col;
-        cursor_clamp(c, buf);
-    }
-    push_action(h->undo_stack, a);
-    return true;
 }
 
 void free_editor_history(EditorHistory *h) {
     if (!h) return;
-    free_action_stack(h->undo_stack);
-    free_action_stack(h->redo_stack);
+    undo_tree_free(h->tree);
     free(h);
+}
+
+// ---------------------------------------------------------------------------
+// Mode transitions
+// ---------------------------------------------------------------------------
+
+void history_begin_group(EditorHistory *h, Position cursor_before) {
+    if (!h) return;
+    undo_tree_open_group(h->tree, cursor_before);
+}
+
+void history_end_group(EditorHistory *h, Position cursor_after) {
+    if (!h) return;
+    undo_tree_close_group(h->tree, cursor_after);
+}
+
+// ---------------------------------------------------------------------------
+// Recording individual actions
+// ---------------------------------------------------------------------------
+
+void history_record(EditorHistory *h, Action a, Position cursor_after) {
+    if (!h) return;
+
+    bool auto_group = (h->tree->open_group == NULL);
+    if (auto_group) {
+        // Safety net: Normal-mode single-command edits (e.g. `x`, `r`, `~`)
+        // are each their own change group.  Open one, record, close it.
+        undo_tree_open_group(h->tree, a.position);
+    }
+
+    a.cursor_after = cursor_after;
+    undo_tree_push_action(h->tree, a);
+
+    if (auto_group) {
+        undo_tree_close_group(h->tree, cursor_after);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Apply / reverse a single Action on the buffer
+// ---------------------------------------------------------------------------
+
+static void apply_action(const Action *a, buffer *buf) {
+    if (!a || !buf) return;
+    switch (a->type) {
+        case INSERT_CHAR:
+            if (a->position.row < buf->numrows)
+                insertChar(&buf->rows[a->position.row],
+                           a->position.col, a->character);
+            break;
+        case DELETE_CHAR:
+            deleteChar(buf, a->position.row, a->position.col);
+            break;
+        case INSERT_CR:
+            insertCR(buf, a->position.row, a->position.col);
+            break;
+        case DELETE_CR:
+            deleteCR(buf, a->position.row + 1);
+            break;
+        case INSERT_TEXT:
+            insertText(buf, a->position.row, a->position.col,
+                       a->text ? a->text : "");
+            break;
+    }
+}
+
+static void reverse_action(const Action *a, buffer *buf) {
+    if (!a || !buf) return;
+    switch (a->type) {
+        case INSERT_CHAR:
+            deleteChar(buf, a->position.row, a->position.col);
+            break;
+        case DELETE_CHAR:
+            if (a->position.row < buf->numrows)
+                insertChar(&buf->rows[a->position.row],
+                           a->position.col, a->character);
+            break;
+        case INSERT_CR:
+            deleteCR(buf, a->position.row + 1);
+            break;
+        case DELETE_CR:
+            insertCR(buf, a->position.row, a->position.col);
+            break;
+        case INSERT_TEXT: {
+            int len = a->text ? (int)strlen(a->text) : 0;
+            deleteTextRange(buf, a->position, len);
+            break;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+
+bool history_undo(EditorHistory *h, buffer *buf, EditorCursor *c) {
+    if (!h || !buf) return false;
+
+    // If there's an open group (user is mid-Insert-mode), close it first.
+    // This matches Vim: pressing `u` in Insert mode first ends the insert,
+    // then undoes it as a single group.
+    if (h->tree->open_group) {
+        Position cur = c ? c->pos : (Position){0, 0};
+        undo_tree_close_group(h->tree, cur);
+    }
+
+    Position cursor_out;
+    if (!undo_tree_undo(h->tree, &cursor_out)) return false;
+
+    // The node that was undone is now tree->current->last_child.
+    const UndoNode *undone = undo_tree_last_undone(h->tree);
+    if (!undone) return false;
+
+    // Reverse actions in REVERSE order.
+    for (int i = (int)undone->count - 1; i >= 0; i--)
+        reverse_action(&undone->actions[i], buf);
+
+    if (c) {
+        c->pos         = cursor_out;
+        c->desired_col = cursor_out.col;
+        cursor_clamp(c, buf);
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Redo
+// ---------------------------------------------------------------------------
+
+bool history_redo(EditorHistory *h, buffer *buf, EditorCursor *c) {
+    if (!h || !buf) return false;
+
+    // Cannot redo while a group is open.
+    if (h->tree->open_group) return false;
+
+    Position cursor_out;
+    if (!undo_tree_redo(h->tree, &cursor_out)) return false;
+
+    // The node that was redone is now tree->current.
+    const UndoNode *redone = undo_tree_last_redone(h->tree);
+    if (!redone) return false;
+
+    // Re-apply actions in FORWARD order.
+    for (size_t i = 0; i < redone->count; i++)
+        apply_action(&redone->actions[i], buf);
+
+    if (c) {
+        c->pos         = cursor_out;
+        c->desired_col = cursor_out.col;
+        cursor_clamp(c, buf);
+    }
+    return true;
 }

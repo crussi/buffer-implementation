@@ -1,9 +1,42 @@
+// test_tab.c
+//
+// Updated for the Vim-style undo tree refactor:
+//
+//   - Tab.mode field added (EditorMode enum); tabs start in MODE_NORMAL.
+//   - EditorHistory now wraps UndoTree; no direct undo_stack/redo_stack access.
+//   - Depth helpers replace old h->undo_stack->size / h->redo_stack->size checks.
+//   - action_stack_is_empty() / peek_action() still work via the shim layer but
+//     those checks are replaced with tree-depth helpers where possible.
+//   - tabInsertText records action AND closes group (auto-group path in
+//     history_record), so records_exactly_one_action is still testable via
+//     undo_depth == 1.
+
 #include "unity.h"
 #include "tab.h"
 #include "buffer.h"
 #include "editor_history.h"
 #include <string.h>
 #include <stdio.h>
+
+// ---------------------------------------------------------------------------
+// Tree-depth helpers (same as in test_editor_history.c)
+// ---------------------------------------------------------------------------
+
+static int undo_depth(EditorHistory *h) {
+    if (!h || !h->tree) return 0;
+    int d = 0;
+    UndoNode *n = h->tree->current;
+    while (n && n->parent) { d++; n = n->parent; }
+    return d;
+}
+
+static int redo_depth(EditorHistory *h) {
+    if (!h || !h->tree) return 0;
+    int d = 0;
+    UndoNode *n = h->tree->current->last_child;
+    while (n) { d++; n = n->last_child; }
+    return d;
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -64,6 +97,12 @@ void test_tab_new_empty_not_dirty(void) {
     tab_free(t);
 }
 
+void test_tab_new_empty_mode_is_normal(void) {
+    Tab *t = tab_new_empty();
+    TEST_ASSERT_EQUAL_INT(MODE_NORMAL, t->mode);
+    tab_free(t);
+}
+
 // ---------------------------------------------------------------------------
 // tab_new_from_file
 // ---------------------------------------------------------------------------
@@ -115,6 +154,47 @@ void test_tab_free_null_does_not_crash(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Mode transitions
+// ---------------------------------------------------------------------------
+
+void test_tab_enter_insert_mode_sets_mode(void) {
+    Tab *t = tab_new_empty();
+    tab_enter_insert_mode(t);
+    TEST_ASSERT_EQUAL_INT(MODE_INSERT, t->mode);
+    tab_free(t);
+}
+
+void test_tab_leave_insert_mode_returns_to_normal(void) {
+    Tab *t = tab_new_empty();
+    tab_enter_insert_mode(t);
+    tab_leave_insert_mode(t);
+    TEST_ASSERT_EQUAL_INT(MODE_NORMAL, t->mode);
+    tab_free(t);
+}
+
+void test_tab_enter_normal_mode_from_insert(void) {
+    Tab *t = tab_new_empty();
+    tab_enter_insert_mode(t);
+    tab_enter_normal_mode(t);
+    TEST_ASSERT_EQUAL_INT(MODE_NORMAL, t->mode);
+    tab_free(t);
+}
+
+void test_tab_enter_visual_mode_sets_mode(void) {
+    Tab *t = tab_new_empty();
+    tab_enter_visual_mode(t);
+    TEST_ASSERT_EQUAL_INT(MODE_VISUAL, t->mode);
+    tab_free(t);
+}
+
+void test_tab_enter_replace_mode_sets_mode(void) {
+    Tab *t = tab_new_empty();
+    tab_enter_replace_mode(t);
+    TEST_ASSERT_EQUAL_INT(MODE_REPLACE, t->mode);
+    tab_free(t);
+}
+
+// ---------------------------------------------------------------------------
 // tabInsertChar
 // ---------------------------------------------------------------------------
 
@@ -144,7 +224,7 @@ void test_tabInsertChar_inserts_in_middle(void) {
 void test_tabInsertChar_records_action(void) {
     Tab *t = tab_new_empty();
     tabInsertChar(t, 0, 0, 'Z');
-    TEST_ASSERT_FALSE(action_stack_is_empty(t->history->undo_stack));
+    TEST_ASSERT_EQUAL_INT(1, undo_depth(t->history));
     tab_free(t);
 }
 
@@ -183,8 +263,9 @@ void test_tabDeleteChar_removes_last(void) {
 
 void test_tabDeleteChar_records_action(void) {
     Tab *t = make_tab_with_text("A");
+    int depth_before = undo_depth(t->history);
     tabDeleteChar(t, 0, 0);
-    TEST_ASSERT_FALSE(action_stack_is_empty(t->history->undo_stack));
+    TEST_ASSERT_EQUAL_INT(depth_before + 1, undo_depth(t->history));
     tab_free(t);
 }
 
@@ -229,8 +310,9 @@ void test_tabInsertCR_at_end(void) {
 
 void test_tabInsertCR_records_action(void) {
     Tab *t = make_tab_with_text("AB");
+    int depth_before = undo_depth(t->history);
     tabInsertCR(t, 0, 1);
-    TEST_ASSERT_FALSE(action_stack_is_empty(t->history->undo_stack));
+    TEST_ASSERT_EQUAL_INT(depth_before + 1, undo_depth(t->history));
     tab_free(t);
 }
 
@@ -258,9 +340,9 @@ void test_tabDeleteCR_merges_rows(void) {
 void test_tabDeleteCR_records_action(void) {
     Tab *t = make_tab_with_text("AB");
     tabInsertCR(t, 0, 1);
-    size_t before = t->history->undo_stack->size;
+    int depth_before = undo_depth(t->history);
     tabDeleteCR(t, 1);
-    TEST_ASSERT_GREATER_THAN(before, t->history->undo_stack->size);
+    TEST_ASSERT_EQUAL_INT(depth_before + 1, undo_depth(t->history));
     tab_free(t);
 }
 
@@ -338,24 +420,22 @@ void test_tabInsertText_multiple_embedded_newlines(void) {
 
 void test_tabInsertText_empty_string_is_noop(void) {
     Tab *t = make_tab_with_text("hello");
-
-    size_t undo_before = t->history->undo_stack->size;
+    int depth_before = undo_depth(t->history);
     bool dirty_before = t->dirty;
 
     Position end = tabInsertText(t, 0, 3, "");
 
     TEST_ASSERT_EQUAL_STRING("hello", row_text(t, 0));
-    TEST_ASSERT_EQUAL_size_t(undo_before, t->history->undo_stack->size);
+    TEST_ASSERT_EQUAL_INT(depth_before, undo_depth(t->history));
     TEST_ASSERT_EQUAL(dirty_before, t->dirty);
     TEST_ASSERT_EQUAL_INT(0, end.row);
     TEST_ASSERT_EQUAL_INT(3, end.col);
-
     tab_free(t);
 }
+
 void test_tabInsertText_null_text_is_safe(void) {
     Tab *t = tab_new_empty();
     Position end = tabInsertText(t, 0, 0, NULL);
-    // NULL text: no-op, returns start position
     TEST_ASSERT_EQUAL_INT(0, end.row);
     TEST_ASSERT_EQUAL_INT(0, end.col);
     TEST_ASSERT_EQUAL_STRING("", row_text(t, 0));
@@ -366,22 +446,12 @@ void test_tabInsertText_null_text_is_safe(void) {
 // tabInsertText — records a single undoable action
 // ---------------------------------------------------------------------------
 
-void test_tabInsertText_records_exactly_one_action(void) {
+void test_tabInsertText_records_exactly_one_undo_step(void) {
     Tab *t = tab_new_empty();
-    // Ensure undo stack was empty before
-    TEST_ASSERT_EQUAL_size_t(0, t->history->undo_stack->size);
+    TEST_ASSERT_EQUAL_INT(0, undo_depth(t->history));
     tabInsertText(t, 0, 0, "hello\nworld");
-    // Must push exactly ONE action, not one per character
-    TEST_ASSERT_EQUAL_size_t(1, t->history->undo_stack->size);
-    tab_free(t);
-}
-
-void test_tabInsertText_action_type_is_INSERT_TEXT(void) {
-    Tab *t = tab_new_empty();
-    tabInsertText(t, 0, 0, "hi");
-    Action a;
-    peek_action(t->history->undo_stack, &a);
-    TEST_ASSERT_EQUAL_INT(INSERT_TEXT, a.type);
+    // Bulk insert must be one undo step, not one per character.
+    TEST_ASSERT_EQUAL_INT(1, undo_depth(t->history));
     tab_free(t);
 }
 
@@ -393,13 +463,17 @@ void test_tabInsertText_sets_dirty(void) {
     tab_free(t);
 }
 
-void test_tabInsertText_clears_redo_stack(void) {
+void test_tabInsertText_clears_redo_path(void) {
+    // Undo something so there is a redo path, then insert — redo depth of
+    // the NEW branch is 0 (the old branch still exists in the tree but is
+    // not the default redo target).
     Tab *t = tab_new_empty();
     tabInsertChar(t, 0, 0, 'A');
-    tabUndo(t);   // redo stack now has one entry
-    TEST_ASSERT_EQUAL_size_t(1, t->history->redo_stack->size);
+    tabUndo(t);
+    TEST_ASSERT_EQUAL_INT(1, redo_depth(t->history));
     tabInsertText(t, 0, 0, "new");
-    TEST_ASSERT_EQUAL_size_t(0, t->history->redo_stack->size);
+    // The new branch has no children yet.
+    TEST_ASSERT_EQUAL_INT(0, redo_depth(t->history));
     tab_free(t);
 }
 
@@ -435,12 +509,11 @@ void test_tabInsertText_undo_removes_mid_line_insert(void) {
 }
 
 void test_tabInsertText_undo_is_single_step(void) {
-    // A 10-character insert should be undone in exactly one tabUndo call.
     Tab *t = tab_new_empty();
     tabInsertText(t, 0, 0, "helloworld");
     tabUndo(t);
     TEST_ASSERT_EQUAL_STRING("", row_text(t, 0));
-    // Second undo should find nothing to do
+    // Second undo should find nothing to do.
     TEST_ASSERT_FALSE(tabUndo(t));
     tab_free(t);
 }
@@ -459,7 +532,7 @@ void test_tabInsertText_undo_multiline_is_single_step(void) {
 void test_tabInsertText_undo_sets_dirty(void) {
     Tab *t = tab_new_empty();
     tabInsertText(t, 0, 0, "hello");
-    t->dirty = false;   // simulate a save
+    t->dirty = false;
     tabUndo(t);
     TEST_ASSERT_TRUE(t->dirty);
     tab_free(t);
@@ -511,7 +584,6 @@ void test_tabInsertText_undo_redo_cycle_is_stable(void) {
 void test_tabInsertText_cursor_positioned_at_end(void) {
     Tab *t = tab_new_empty();
     Position end = tabInsertText(t, 0, 0, "hello");
-    // Caller is responsible for updating the cursor; verify return value.
     TEST_ASSERT_EQUAL_INT(0, end.row);
     TEST_ASSERT_EQUAL_INT(5, end.col);
     tab_free(t);
@@ -530,8 +602,6 @@ void test_tabInsertText_cursor_positioned_after_multiline(void) {
 // ---------------------------------------------------------------------------
 
 void test_tabInsertText_followed_by_insert_char_undo_order(void) {
-    // InsertText "hi", then InsertChar 'X' → "hiX"
-    // Undo 'X' first, then undo "hi"
     Tab *t = tab_new_empty();
     tabInsertText(t, 0, 0, "hi");
     tabInsertChar(t, 0, 2, 'X');
@@ -544,25 +614,25 @@ void test_tabInsertText_followed_by_insert_char_undo_order(void) {
 }
 
 void test_tabInsertText_after_insert_cr_undo_order(void) {
-    // Split row, then bulk-insert into row 1
     Tab *t = make_tab_with_text("Hello");
-    tabInsertCR(t, 0, 5);          // ["Hello", ""]
-    tabInsertText(t, 1, 0, "World");  // ["Hello", "World"]
+    tabInsertCR(t, 0, 5);
+    tabInsertText(t, 1, 0, "World");
     TEST_ASSERT_EQUAL_STRING("World", row_text(t, 1));
-    tabUndo(t);   // undo InsertText
+    tabUndo(t);
     TEST_ASSERT_EQUAL_STRING("", row_text(t, 1));
-    tabUndo(t);   // undo InsertCR
+    tabUndo(t);
     TEST_ASSERT_EQUAL_INT(1, t->buf->numrows);
     tab_free(t);
 }
 
-void test_new_edit_after_insert_text_undo_clears_redo(void) {
+void test_new_edit_after_insert_text_undo_creates_new_branch(void) {
     Tab *t = tab_new_empty();
     tabInsertText(t, 0, 0, "hello");
     tabUndo(t);
-    TEST_ASSERT_EQUAL_size_t(1, t->history->redo_stack->size);
+    TEST_ASSERT_EQUAL_INT(1, redo_depth(t->history));
     tabInsertChar(t, 0, 0, 'X');
-    TEST_ASSERT_EQUAL_size_t(0, t->history->redo_stack->size);
+    // New branch is current; old redo is no longer default.
+    TEST_ASSERT_EQUAL_INT(0, redo_depth(t->history));
     tab_free(t);
 }
 
@@ -683,7 +753,7 @@ void test_tabRedo_after_undo_delete_cr(void) {
     tab_free(t);
 }
 
-void test_tabRedo_empty_redo_stack_returns_false(void) {
+void test_tabRedo_empty_redo_path_returns_false(void) {
     Tab *t = tab_new_empty();
     TEST_ASSERT_FALSE(tabRedo(t));
     tab_free(t);
@@ -700,16 +770,19 @@ void test_tabRedo_sets_dirty(void) {
 }
 
 // ---------------------------------------------------------------------------
-// Redo stack cleared on new edit
+// New edit after undo (undo tree: creates new branch)
 // ---------------------------------------------------------------------------
 
-void test_new_edit_clears_redo_stack(void) {
+void test_new_edit_after_undo_creates_branch_not_erase(void) {
+    // In an undo tree, the old redo path is NOT erased; a new branch is
+    // created.  The test verifies that redo_depth on the new branch is 0
+    // (the new branch has no children) while undo_depth is 1.
     Tab *t = tab_new_empty();
     tabInsertChar(t, 0, 0, 'A');
     tabUndo(t);
     tabInsertChar(t, 0, 0, 'B');
-    bool ok = tabRedo(t);
-    TEST_ASSERT_FALSE(ok);
+    TEST_ASSERT_EQUAL_INT(1, undo_depth(t->history));
+    TEST_ASSERT_EQUAL_INT(0, redo_depth(t->history));
     tab_free(t);
 }
 
@@ -745,6 +818,61 @@ void test_undo_redo_with_cr(void) {
 }
 
 // ---------------------------------------------------------------------------
+// Vim change-group via mode transitions
+// ---------------------------------------------------------------------------
+
+void test_insert_mode_groups_chars_as_one_undo_step(void) {
+    // Enter Insert, type three chars, leave Insert → one undo step.
+    Tab *t = tab_new_empty();
+    tab_enter_insert_mode(t);
+    tabInsertChar(t, 0, 0, 'a');
+    tabInsertChar(t, 0, 1, 'b');
+    tabInsertChar(t, 0, 2, 'c');
+    tab_leave_insert_mode(t);
+
+    TEST_ASSERT_EQUAL_STRING("abc", row_text(t, 0));
+    TEST_ASSERT_EQUAL_INT(1, undo_depth(t->history));
+
+    tabUndo(t);
+    TEST_ASSERT_EQUAL_STRING("", row_text(t, 0));
+    TEST_ASSERT_FALSE(tabUndo(t));  // nothing more to undo
+    tab_free(t);
+}
+
+void test_two_insert_sessions_two_undo_steps(void) {
+    Tab *t = tab_new_empty();
+
+    tab_enter_insert_mode(t);
+    tabInsertChar(t, 0, 0, 'A');
+    tab_leave_insert_mode(t);
+
+    tab_enter_insert_mode(t);
+    tabInsertChar(t, 0, 1, 'B');
+    tab_leave_insert_mode(t);
+
+    TEST_ASSERT_EQUAL_INT(2, undo_depth(t->history));
+    tabUndo(t);
+    TEST_ASSERT_EQUAL_STRING("A", row_text(t, 0));
+    tabUndo(t);
+    TEST_ASSERT_EQUAL_STRING("", row_text(t, 0));
+    tab_free(t);
+}
+
+void test_undo_during_insert_mode_closes_group_first(void) {
+    // tabUndo when in Insert mode should close the open group then undo it.
+    Tab *t = tab_new_empty();
+    tab_enter_insert_mode(t);
+    tabInsertChar(t, 0, 0, 'X');
+    tabInsertChar(t, 0, 1, 'Y');
+    // Undo while still in Insert mode.
+    tabUndo(t);
+    // Both chars must be gone (the group was closed then undone).
+    TEST_ASSERT_EQUAL_STRING("", row_text(t, 0));
+    TEST_ASSERT_EQUAL_INT(MODE_NORMAL, t->mode);
+    tab_free(t);
+}
+
+// ---------------------------------------------------------------------------
 // tab_open
 // ---------------------------------------------------------------------------
 
@@ -773,8 +901,22 @@ void test_tab_open_resets_history(void) {
     Tab *t = tab_new_empty();
     tabInsertChar(t, 0, 0, 'X');
     tab_open(t, path);
-    TEST_ASSERT_TRUE(action_stack_is_empty(t->history->undo_stack));
+    // After open, undo tree should be reset (nothing to undo).
+    TEST_ASSERT_FALSE(tabUndo(t));
     TEST_ASSERT_FALSE(t->dirty);
+    tab_free(t);
+    remove(path);
+}
+
+void test_tab_open_resets_mode_to_normal(void) {
+    const char *path = "test_tab_open_mode_tmp.txt";
+    FILE *f = fopen(path, "w");
+    fputs("hi\n", f);
+    fclose(f);
+    Tab *t = tab_new_empty();
+    tab_enter_insert_mode(t);
+    tab_open(t, path);
+    TEST_ASSERT_EQUAL_INT(MODE_NORMAL, t->mode);
     tab_free(t);
     remove(path);
 }
@@ -901,6 +1043,7 @@ int main(void) {
     RUN_TEST(test_tab_new_empty_one_empty_row);
     RUN_TEST(test_tab_new_empty_filepath_is_null);
     RUN_TEST(test_tab_new_empty_not_dirty);
+    RUN_TEST(test_tab_new_empty_mode_is_normal);
 
     // tab_new_from_file
     RUN_TEST(test_tab_new_from_file_reads_content);
@@ -910,6 +1053,13 @@ int main(void) {
 
     // tab_free
     RUN_TEST(test_tab_free_null_does_not_crash);
+
+    // Mode transitions
+    RUN_TEST(test_tab_enter_insert_mode_sets_mode);
+    RUN_TEST(test_tab_leave_insert_mode_returns_to_normal);
+    RUN_TEST(test_tab_enter_normal_mode_from_insert);
+    RUN_TEST(test_tab_enter_visual_mode_sets_mode);
+    RUN_TEST(test_tab_enter_replace_mode_sets_mode);
 
     // tabInsertChar
     RUN_TEST(test_tabInsertChar_appends_single);
@@ -948,11 +1098,10 @@ int main(void) {
     RUN_TEST(test_tabInsertText_empty_string_is_noop);
     RUN_TEST(test_tabInsertText_null_text_is_safe);
 
-    // tabInsertText — single undoable action
-    RUN_TEST(test_tabInsertText_records_exactly_one_action);
-    RUN_TEST(test_tabInsertText_action_type_is_INSERT_TEXT);
+    // tabInsertText — single undoable step
+    RUN_TEST(test_tabInsertText_records_exactly_one_undo_step);
     RUN_TEST(test_tabInsertText_sets_dirty);
-    RUN_TEST(test_tabInsertText_clears_redo_stack);
+    RUN_TEST(test_tabInsertText_clears_redo_path);
 
     // tabInsertText — undo
     RUN_TEST(test_tabInsertText_undo_removes_single_line);
@@ -974,7 +1123,7 @@ int main(void) {
     // tabInsertText — interactions
     RUN_TEST(test_tabInsertText_followed_by_insert_char_undo_order);
     RUN_TEST(test_tabInsertText_after_insert_cr_undo_order);
-    RUN_TEST(test_new_edit_after_insert_text_undo_clears_redo);
+    RUN_TEST(test_new_edit_after_insert_text_undo_creates_new_branch);
 
     // tabUndo (existing action types)
     RUN_TEST(test_tabUndo_insert_char);
@@ -990,19 +1139,25 @@ int main(void) {
     RUN_TEST(test_tabRedo_after_undo_delete_char);
     RUN_TEST(test_tabRedo_after_undo_insert_cr);
     RUN_TEST(test_tabRedo_after_undo_delete_cr);
-    RUN_TEST(test_tabRedo_empty_redo_stack_returns_false);
+    RUN_TEST(test_tabRedo_empty_redo_path_returns_false);
     RUN_TEST(test_tabRedo_sets_dirty);
 
-    // Redo cleared on new edit
-    RUN_TEST(test_new_edit_clears_redo_stack);
+    // New edit creates branch (undo tree)
+    RUN_TEST(test_new_edit_after_undo_creates_branch_not_erase);
 
     // Round-trip undo/redo
     RUN_TEST(test_full_undo_redo_round_trip);
     RUN_TEST(test_undo_redo_with_cr);
 
+    // Vim change-group via mode transitions
+    RUN_TEST(test_insert_mode_groups_chars_as_one_undo_step);
+    RUN_TEST(test_two_insert_sessions_two_undo_steps);
+    RUN_TEST(test_undo_during_insert_mode_closes_group_first);
+
     // tab_open
     RUN_TEST(test_tab_open_loads_file_content);
     RUN_TEST(test_tab_open_resets_history);
+    RUN_TEST(test_tab_open_resets_mode_to_normal);
     RUN_TEST(test_tab_open_null_path_returns_false);
     RUN_TEST(test_tab_open_bad_path_returns_false);
 

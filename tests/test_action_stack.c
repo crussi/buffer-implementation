@@ -1,3 +1,10 @@
+// test_action_stack.c
+//
+// The legacy ActionStack shim API is fully preserved, so almost nothing
+// changes here.  The only update is in the two Action-construction helpers:
+// the Action struct now has cursor_before and cursor_after fields, so the
+// helpers zero-initialise them to keep the struct well-defined.
+
 #include "unity.h"
 #include "action_stack.h"
 #include <stdlib.h>
@@ -20,22 +27,28 @@ void tearDown(void) {
 
 static Action make_char_action(ActionType type, int row, int col, char c) {
     Action a;
-    a.type         = type;
-    a.position.row = row;
-    a.position.col = col;
-    a.character    = c;
-    a.text         = NULL;
+    a.type            = type;
+    a.position.row    = row;
+    a.position.col    = col;
+    a.character       = c;
+    a.text            = NULL;
+    // New fields added by the undo-tree refactor -- zero-initialise so the
+    // struct is well-defined; the ActionStack shim does not inspect them.
+    a.cursor_before.row = 0;  a.cursor_before.col = 0;
+    a.cursor_after.row  = 0;  a.cursor_after.col  = 0;
     return a;
 }
 
 static Action make_text_action(ActionType type, int row, int col,
                                const char *text) {
     Action a;
-    a.type         = type;
-    a.position.row = row;
-    a.position.col = col;
-    a.character    = '\0';
-    a.text         = text ? strdup(text) : NULL;
+    a.type            = type;
+    a.position.row    = row;
+    a.position.col    = col;
+    a.character       = '\0';
+    a.text            = text ? strdup(text) : NULL;
+    a.cursor_before.row = 0;  a.cursor_before.col = 0;
+    a.cursor_after.row  = 0;  a.cursor_after.col  = 0;
     return a;
 }
 
@@ -266,7 +279,6 @@ void test_reset_frees_text_payloads(void) {
     reset_action_stack(stack);
     TEST_ASSERT_EQUAL_size_t(0, stack->size);
 }
-
 
 // --------------------------------------------------------- max_capacity
 
