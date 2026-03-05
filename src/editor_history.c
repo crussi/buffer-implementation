@@ -46,8 +46,9 @@ void history_record(EditorHistory *h, Action a, Position cursor_after) {
     bool auto_group = (h->tree->open_group == NULL);
     if (auto_group) {
         // Safety net: Normal-mode single-command edits (e.g. `x`, `r`, `~`)
-        // are each their own change group.  Open one, record, close it.
-        undo_tree_open_group(h->tree, a.position);
+        // that don't wrap themselves in a group land here.  We open a group
+        // using the action's own pre-edit cursor position as cursor_before.
+        undo_tree_open_group(h->tree, a.cursor_before);
     }
 
     a.cursor_after = cursor_after;
@@ -121,15 +122,24 @@ bool history_undo(EditorHistory *h, buffer *buf, EditorCursor *c) {
     // If there's an open group (user is mid-Insert-mode), close it first.
     // This matches Vim: pressing `u` in Insert mode first ends the insert,
     // then undoes it as a single group.
+    //
+    // We perform the cursor col-1 adjustment that tab_leave_insert_mode
+    // normally handles, so the cursor is correct in the closed group.
     if (h->tree->open_group) {
         Position cur = c ? c->pos : (Position){0, 0};
+        // Mirror the col-- that tab_leave_insert_mode applies.
+        if (c && c->pos.col > 0) {
+            cur.col--;
+            c->pos.col--;
+            c->desired_col = c->pos.col;
+        }
         undo_tree_close_group(h->tree, cur);
     }
 
     Position cursor_out;
     if (!undo_tree_undo(h->tree, &cursor_out)) return false;
 
-    // The node that was undone is now tree->current->last_child.
+    // The node that was undone is recorded in current->last_undone_child.
     const UndoNode *undone = undo_tree_last_undone(h->tree);
     if (!undone) return false;
 

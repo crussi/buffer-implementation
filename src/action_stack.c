@@ -71,17 +71,15 @@ UndoTree *undo_tree_new(void) {
     tree->root = node_new(0);
     if (!tree->root) { free(tree); return NULL; }
 
-    tree->current   = tree->root;
+    tree->current    = tree->root;
     tree->open_group = NULL;
-    tree->next_seq  = 1;
+    tree->next_seq   = 1;
+    tree->saved_seq  = 0;   // root seq == saved state (freshly opened / empty)
     return tree;
 }
 
 void undo_tree_free(UndoTree *tree) {
     if (!tree) return;
-    // The open_group (if any) is already in the tree as a child of current,
-    // so subtree_free will reach it.  But if it was never linked (shouldn't
-    // happen with correct usage), free it separately.
     subtree_free(tree->root);
     free(tree);
 }
@@ -96,11 +94,9 @@ void undo_tree_open_group(UndoTree *tree, Position cursor_before) {
     UndoNode *n = node_new(tree->next_seq++);
     if (!n) return;
 
-    // Record where the cursor was BEFORE this group.
-    // We store it as cursor_after of the *parent* node so that undo can
-    // restore it.  Actually we stash it in a field on the new node for
-    // easy access.
-    n->cursor_after = cursor_before;   // will be overwritten on close
+    // Record where the cursor was BEFORE this group's edits.
+    // This is the position we restore on undo.
+    n->cursor_before = cursor_before;
 
     // Link into tree immediately so actions can reference it.
     node_add_child(tree->current, n);
@@ -162,6 +158,20 @@ void undo_tree_close_group(UndoTree *tree, Position cursor_after) {
 }
 
 // ---------------------------------------------------------------------------
+// Save-state tracking
+// ---------------------------------------------------------------------------
+
+void undo_tree_mark_saved(UndoTree *tree) {
+    if (!tree) return;
+    tree->saved_seq = tree->current->seq;
+}
+
+bool undo_tree_is_dirty(const UndoTree *tree) {
+    if (!tree) return false;
+    return tree->current->seq != tree->saved_seq;
+}
+
+// ---------------------------------------------------------------------------
 // Undo / Redo
 // ---------------------------------------------------------------------------
 
@@ -174,15 +184,16 @@ bool undo_tree_undo(UndoTree *tree, Position *cursor_out) {
     // The node to undo is the current node.
     UndoNode *node = tree->current;
 
-    // Move current to parent BEFORE reporting cursor – the cursor returned
-    // should be the position the user had before this group was applied,
-    // which is stored in the parent's cursor_after.
+    // Record which child we came from so undo_tree_last_undone() returns
+    // exactly this node regardless of branching.
+    node->parent->last_undone_child = node;
+
+    // Move current to parent.
     tree->current = node->parent;
 
-    // Cursor goes back to wherever it was before this group.
-    // We stored that in the parent's cursor_after (or, equivalently, the
-    // pre-edit cursor of this group).  We use the parent's cursor_after.
-    *cursor_out = tree->current->cursor_after;
+    // The cursor to restore is the position recorded when the group was
+    // opened – i.e. where the user was before these edits were made.
+    *cursor_out = node->cursor_before;
 
     return true;
 }
@@ -203,13 +214,11 @@ bool undo_tree_redo(UndoTree *tree, Position *cursor_out) {
 // Iteration helpers
 // ---------------------------------------------------------------------------
 
-// These are simple accessors; the caller drives the actual buffer mutations.
-
 const UndoNode *undo_tree_last_undone(const UndoTree *tree) {
-    // After undo_tree_undo() returns true, current == parent.
-    // The node that was undone is current->last_child (we just moved up).
+    // After undo_tree_undo() the node that was undone is recorded in
+    // current->last_undone_child (set just before we moved current up).
     if (!tree) return NULL;
-    return tree->current->last_child;
+    return tree->current->last_undone_child;
 }
 
 const UndoNode *undo_tree_last_redone(const UndoTree *tree) {

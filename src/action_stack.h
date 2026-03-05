@@ -67,13 +67,24 @@ typedef struct UndoNode {
     size_t   count;
     size_t   capacity;
 
+    // Cursor position at the moment the group was OPENED (i.e. where the
+    // cursor was before any of this group's edits were applied).
+    // Restored when this group is undone.
+    Position cursor_before;
+
     // Cursor position saved at the moment this group was COMMITTED (i.e. the
     // cursor state the user sees after the edits, before any undo).
+    // Restored when this group is redone.
     Position cursor_after;
 
     // The most-recently-visited child – used so that Ctrl-R always goes back
     // to where the user was before the last `u`.
     struct UndoNode *last_child;
+
+    // The specific child we traversed UP from during the last undo.
+    // Used by undo_tree_last_undone() to return exactly the right node
+    // regardless of tree branching.
+    struct UndoNode *last_undone_child;
 } UndoNode;
 
 // The undo tree container held by each Tab.
@@ -86,6 +97,10 @@ typedef struct {
     UndoNode *open_group;
 
     uint64_t  next_seq; // ever-increasing sequence counter
+
+    // Sequence number of the tree state at last save (for dirty tracking).
+    // Equals current->seq when the buffer matches what is on disk.
+    uint64_t  saved_seq;
 } UndoTree;
 
 // ---------------------------------------------------------------------------
@@ -114,6 +129,12 @@ void undo_tree_push_action(UndoTree *tree, Action action);
 // cursor_after is the cursor position the user sees after all edits.
 void undo_tree_close_group(UndoTree *tree, Position cursor_after);
 
+// Mark the current tree state as saved (call after a successful file write).
+void undo_tree_mark_saved(UndoTree *tree);
+
+// Return true if the buffer has been modified since the last save.
+bool undo_tree_is_dirty(const UndoTree *tree);
+
 // --- Undo / Redo ---
 
 // Undo the most recent committed change group.
@@ -133,7 +154,7 @@ bool undo_tree_redo(UndoTree *tree, Position *cursor_out);
 // Return the actions array of the node being undone/redone.
 // Used so that editor_history.c can apply the actual buffer mutations.
 
-// Returns the node that was just undone (parent of new current), or NULL.
+// Returns the node that was just undone (child of new current), or NULL.
 const UndoNode *undo_tree_last_undone(const UndoTree *tree);
 
 // Returns the node that was just redone (new current), or NULL.

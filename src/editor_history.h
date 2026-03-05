@@ -53,8 +53,9 @@ void history_end_group(EditorHistory *h, Position cursor_after);
 // --- Record a single action (called by tab.c helpers) ---
 //
 // The action is appended to the currently open change group.
-// If no group is open (shouldn't happen with correct mode management, but
-// as a safety net) a single-action group is opened and immediately closed.
+// If no group is open (Normal-mode single-command edits such as `x`, `r`,
+// `~`) a single-action group is opened and immediately closed, making each
+// command its own undoable step.
 // The EditorHistory takes ownership of action.text.
 void history_record(EditorHistory *h, Action a, Position cursor_after);
 
